@@ -1,93 +1,138 @@
 import { motion } from 'framer-motion';
-import { ArrowRight, Database, Layers, ShieldCheck, Sparkles, Workflow } from 'lucide-react';
+import { ArrowRight, Database, Layers, ShieldCheck, Sparkles, Workflow, CheckCircle2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const LandingPage = () => {
   return (
-    <div className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-100">
-      <div className="pointer-events-none absolute left-0 top-8 h-72 w-72 rounded-full bg-cyan-500/20 blur-3xl" />
-      <div className="pointer-events-none absolute right-0 top-24 h-80 w-80 rounded-full bg-violet-500/15 blur-3xl" />
+    <div className="relative min-h-screen bg-theme-bg text-theme-text-primary overflow-hidden">
+      {/* Top Header */}
+      <header className="sticky top-0 z-30 bg-theme-surface/90 backdrop-blur border-b border-theme-border px-6 py-4">
+        <div className="mx-auto max-w-7xl flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-sky-400 flex items-center justify-center text-white shadow-md shadow-cyan-500/20">
+              <Sparkles size={18} className="text-white" />
+            </div>
+            <div>
+              <span className="text-base font-bold tracking-tight text-theme-text-primary">StreamWeaver</span>
+              <span className="ml-2 text-[10px] uppercase font-bold text-theme-primary px-2 py-0.5 rounded-full bg-theme-surface-blue border border-theme-border-strong">
+                ETL
+              </span>
+            </div>
+          </div>
 
-      <header className="relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-8 lg:px-8">
-        <div className="text-xl font-semibold tracking-wide text-white">StreamWeaver</div>
-        <div className="flex items-center gap-4">
-          <Link to="/auth" className="rounded-full border border-white/10 bg-slate-900/70 px-4 py-2 text-sm text-slate-100 transition hover:border-cyan-500/30">
-            Sign In
-          </Link>
-          <Link to="/auth" className="rounded-full bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-400">
-            Get Started
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link 
+              to="/auth" 
+              className="btn-secondary text-xs py-2 px-4 rounded-xl"
+            >
+              Sign In
+            </Link>
+            <Link 
+              to="/auth" 
+              className="btn-primary text-xs py-2 px-4 rounded-xl"
+            >
+              Get Started
+            </Link>
+          </div>
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto max-w-7xl px-6 pb-24 lg:px-8">
-        <section className="grid items-center gap-10 rounded-[32px] border border-white/10 bg-white/5 p-10 shadow-2xl backdrop-blur-xl lg:grid-cols-[1.1fr_0.9fr] lg:p-16">
-          <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
-            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-sm text-cyan-200">
-              <Sparkles size={16} /> Enterprise ETL for modern data teams
+      {/* Main Hero Section */}
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 py-12 sm:py-16">
+        <div className="saas-card p-8 sm:p-14 bg-gradient-to-br from-theme-surface via-theme-surface-soft to-theme-surface-blue grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-10 items-center">
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-theme-surface-blue border border-theme-border-strong text-theme-primary text-xs font-semibold uppercase tracking-wider mb-4">
+              <Sparkles size={13} />
+              <span>Enterprise ETL Workspace</span>
             </div>
-            <h1 className="text-5xl font-semibold leading-tight tracking-tight text-white lg:text-7xl">
-              High-throughput no-code ETL that scales with your data.
+            <h1 className="text-3xl sm:text-5xl font-bold text-theme-text-primary tracking-tight leading-tight">
+              High-throughput no-code data pipelines that scale effortlessly.
             </h1>
-            <p className="mt-6 max-w-2xl text-lg text-slate-300">
-              Upload massive CSV and JSON files, map fields visually, transform records, validate quality, and import into MongoDB with live progress and enterprise security.
+            <p className="mt-4 text-sm sm:text-base text-theme-text-secondary leading-relaxed max-w-xl">
+              Ingest multi-gigabyte CSV and JSON files with streaming memory efficiency, map destination schemas visually, apply isolated sandbox transforms, and audit data quality.
             </p>
-            <div className="mt-8 flex flex-wrap gap-4">
-              <Link to="/auth" className="inline-flex items-center gap-2 rounded-full bg-cyan-400 px-5 py-3 font-medium text-slate-950 shadow-md shadow-cyan-400/20 transition hover:bg-cyan-300">
-                Start Free <ArrowRight size={18} />
+            <div className="mt-8 flex flex-wrap items-center gap-3">
+              <Link to="/auth" className="btn-primary text-xs sm:text-sm py-3 px-6 rounded-xl flex items-center gap-2">
+                <span>Launch Workspace</span>
+                <ArrowRight size={16} />
               </Link>
-              <Link to="/dashboard" className="rounded-full border border-white/10 bg-slate-900/80 px-5 py-3 font-medium text-slate-100 transition hover:border-cyan-500/30">
-                Explore Platform
+              <Link to="/dashboard" className="btn-secondary text-xs sm:text-sm py-3 px-5 rounded-xl">
+                Explore Command Center
               </Link>
             </div>
           </motion.div>
 
-          <motion.div initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.7 }} className="relative rounded-[28px] border border-white/10 bg-gradient-to-br from-cyan-500/15 via-slate-900 to-violet-500/15 p-8 shadow-2xl">
-            <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-white/10 to-transparent" />
-            <div className="grid gap-4">
-              <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-5">
-                <div className="flex items-center justify-between text-sm text-slate-400">
-                  <span>Live Import Engine</span>
-                  <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-emerald-200">Online</span>
-                </div>
-                <div className="mt-3 h-3 rounded-full bg-slate-800">
-                  <div className="h-3 w-3/4 rounded-full bg-gradient-to-r from-cyan-400 to-violet-500" />
-                </div>
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.6 }} className="space-y-4">
+            <div className="saas-card p-5 bg-theme-surface shadow-md">
+              <div className="flex items-center justify-between pb-3 border-b border-theme-border">
+                <span className="text-xs font-bold uppercase tracking-wider text-theme-text-muted">Live Stream Processing</span>
+                <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                  <CheckCircle2 size={13} /> Active Engine
+                </span>
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-5">
-                  <Database className="text-cyan-300" />
-                  <p className="mt-3 text-sm text-slate-400">Streamed ingestion</p>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="p-2.5 rounded-xl bg-theme-surface-soft border border-theme-border">
+                  <p className="text-[10px] text-theme-text-muted uppercase">RAM Peak</p>
+                  <p className="font-bold text-emerald-600 mt-0.5">48 MB</p>
                 </div>
-                <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-5">
-                  <Layers className="text-violet-300" />
-                  <p className="mt-3 text-sm text-slate-400">Visual mapping studio</p>
+                <div className="p-2.5 rounded-xl bg-theme-surface-soft border border-theme-border">
+                  <p className="text-[10px] text-theme-text-muted uppercase">Batch Size</p>
+                  <p className="font-bold text-theme-primary mt-0.5">5,000</p>
                 </div>
-                <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-5">
-                  <ShieldCheck className="text-emerald-300" />
-                  <p className="mt-3 text-sm text-slate-400">Validation & governance</p>
-                </div>
-                <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-5">
-                  <Workflow className="text-amber-300" />
-                  <p className="mt-3 text-sm text-slate-400">Workflow automation</p>
+                <div className="p-2.5 rounded-xl bg-theme-surface-soft border border-theme-border">
+                  <p className="text-[10px] text-theme-text-muted uppercase">Latency</p>
+                  <p className="font-bold text-theme-text-primary mt-0.5">&lt; 1.2s</p>
                 </div>
               </div>
             </div>
-          </motion.div>
-        </section>
 
-        <section className="mt-12 grid gap-6 lg:grid-cols-3">
-          {[
-            { title: 'Fast ingestion', detail: 'Stream CSV and JSON at scale without waiting for file parsing.' },
-            { title: 'Smart mapping', detail: 'Auto-suggest field mappings and preview destination values instantly.' },
-            { title: 'Quality checks', detail: 'Surface validation issues early and keep imports clean.' }
-          ].map((item) => (
-            <article key={item.title} className="rounded-[28px] border border-white/10 bg-slate-900/80 p-6 shadow-xl backdrop-blur-xl transition hover:-translate-y-1 hover:border-cyan-500/20">
-              <p className="text-sm uppercase tracking-[0.35em] text-cyan-300">{item.title}</p>
-              <p className="mt-4 text-base leading-7 text-slate-300">{item.detail}</p>
-            </article>
-          ))}
-        </section>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="saas-card p-4 bg-theme-surface">
+                <Database size={20} className="text-theme-primary mb-2" />
+                <h3 className="text-xs font-bold text-theme-text-primary">Streamed Parsing</h3>
+                <p className="text-[11px] text-theme-text-muted mt-0.5">Zero RAM overload on multi-GB datasets.</p>
+              </div>
+              <div className="saas-card p-4 bg-theme-surface">
+                <Layers size={20} className="text-theme-primary mb-2" />
+                <h3 className="text-xs font-bold text-theme-text-primary">Mapping Studio</h3>
+                <p className="text-[11px] text-theme-text-muted mt-0.5">Visual schema binding & expressions.</p>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+
+        {/* Feature Cards Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-10">
+          <div className="saas-card p-6">
+            <div className="w-10 h-10 rounded-xl bg-theme-surface-blue border border-theme-border-strong text-theme-primary flex items-center justify-center mb-4">
+              <Database size={20} />
+            </div>
+            <h3 className="text-sm font-bold text-theme-text-primary">High-Throughput Ingestion</h3>
+            <p className="text-xs text-theme-text-secondary mt-2 leading-relaxed">
+              Handle large CSV and JSON files effortlessly with incremental streaming straight into database batches.
+            </p>
+          </div>
+
+          <div className="saas-card p-6">
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-600 flex items-center justify-center mb-4">
+              <Layers size={20} />
+            </div>
+            <h3 className="text-sm font-bold text-theme-text-primary">Smart Schema Mapping</h3>
+            <p className="text-xs text-theme-text-secondary mt-2 leading-relaxed">
+              Auto-suggest column pairings, clean null records, and apply JavaScript transformations in isolated sandboxes.
+            </p>
+          </div>
+
+          <div className="saas-card p-6">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-600 flex items-center justify-center mb-4">
+              <ShieldCheck size={20} />
+            </div>
+            <h3 className="text-sm font-bold text-theme-text-primary">Enterprise Validation</h3>
+            <p className="text-xs text-theme-text-secondary mt-2 leading-relaxed">
+              Automatic data profiling, missing-value alerts, quality scores, and real-time streaming progress over WebSockets.
+            </p>
+          </div>
+        </div>
       </main>
     </div>
   );

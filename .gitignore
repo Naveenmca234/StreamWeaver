@@ -20,3 +20,8 @@ tmp/
 
 # Generated test data
 test-data-*.csv
+
+.env
+*.env
+node_modules/
+dist/

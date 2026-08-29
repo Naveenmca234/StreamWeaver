@@ -13,34 +13,49 @@ import AuditPage from './pages/AuditPage';
 import SettingsPage from './pages/SettingsPage';
 import AppShell from './components/AppShell';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ThemeProvider } from './contexts/ThemeContext';
+import { DatasetProvider } from './contexts/DatasetContext';
 
 const ProtectedRoute = ({ children }: { children: ReactNode }) => {
   const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">Loading...</div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-theme-bg text-theme-text-primary flex items-center justify-center">
+        <div className="flex items-center gap-3 saas-card p-6">
+          <div className="w-5 h-5 border-2 border-theme-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm font-medium text-theme-text-secondary">Loading workspace...</span>
+        </div>
+      </div>
+    );
+  }
   return user ? <>{children}</> : <Navigate to="/auth" replace />;
 };
 
 const App = () => {
   return (
-    <AuthProvider>
-      <Routes>
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/auth" element={<AuthPage />} />
-        <Route path="/" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
-          <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="upload" element={<UploadPage />} />
-          <Route path="cleaning" element={<CleaningPage />} />
-          <Route path="preview" element={<PreviewPage />} />
-          <Route path="mapping" element={<MappingPage />} />
-          <Route path="validations" element={<ValidationPage />} />
-          <Route path="validation" element={<ValidationPage />} />
-          <Route path="history" element={<HistoryPage />} />
-          <Route path="audit" element={<AuditPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <DatasetProvider>
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/auth" element={<AuthPage />} />
+            <Route path="/" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
+              <Route path="dashboard" element={<DashboardPage />} />
+              <Route path="upload" element={<UploadPage />} />
+              <Route path="cleaning" element={<CleaningPage />} />
+              <Route path="preview" element={<PreviewPage />} />
+              <Route path="mapping" element={<MappingPage />} />
+              <Route path="validations" element={<ValidationPage />} />
+              <Route path="validation" element={<ValidationPage />} />
+              <Route path="history" element={<HistoryPage />} />
+              <Route path="audit" element={<AuditPage />} />
+              <Route path="settings" element={<SettingsPage />} />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </DatasetProvider>
+      </AuthProvider>
+    </ThemeProvider>
   );
 };
 

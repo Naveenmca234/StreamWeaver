@@ -1,573 +1,569 @@
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  Layers,
+  Sparkles,
+  ArrowRight,
+  Code,
+  CheckCircle2,
+  AlertCircle,
+  Database,
+  Search,
+  Check,
+  Play,
+  RotateCw,
+  Info
+} from 'lucide-react';
 import api from '../services/api';
+import { useDataset } from '../contexts/DatasetContext';
 
-type MappingRow = {
+type MappingItem = {
   source: string;
   target: string;
+  enabled: boolean;
   transformCode?: string;
 };
 
-interface ImportJobSummary {
-  uploadId: string;
-  fileName: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  totalRows: number;
-  failedRows: number;
-  createdAt?: string;
-  columns?: string[];
-  selectedColumns?: string[];
-}
-
-const buildMappingRows = (mapping: unknown, sourceColumns: string[]): MappingRow[] => {
-  const rowsBySource = new Map<string, MappingRow>();
-
-  if (Array.isArray(mapping)) {
-    for (const item of mapping) {
-      if (!item || typeof item !== 'object') continue;
-      const source = (item as any).source;
-      const target = (item as any).dest ?? (item as any).target;
-      if (typeof source !== 'string' || typeof target !== 'string' || !target.trim()) continue;
-      rowsBySource.set(source, {
-        source,
-        target,
-        transformCode: typeof (item as any).transformCode === 'string' ? (item as any).transformCode : undefined
-      });
-    }
-  } else if (mapping && typeof mapping === 'object') {
-    for (const [dest, value] of Object.entries(mapping as Record<string, unknown>)) {
-      if (!dest.trim()) continue;
-      if (typeof value === 'string') {
-        rowsBySource.set(value, { source: value, target: dest, transformCode: undefined });
-      } else if (value && typeof value === 'object' && typeof (value as any).source === 'string') {
-        rowsBySource.set((value as any).source, {
-          source: (value as any).source,
-          target: dest,
-          transformCode: typeof (value as any).transformCode === 'string' ? (value as any).transformCode : undefined
-        });
-      }
-    }
-  }
-
-  const rows = sourceColumns.map((source) => rowsBySource.get(source) ?? { source, target: '', transformCode: undefined });
-  for (const row of rowsBySource.values()) {
-    if (!sourceColumns.includes(row.source)) {
-      rows.push(row);
-    }
-  }
-
-  return rows;
-};
-
-const normalizeMapping = (raw: unknown): Record<string, { source: string; transformCode?: string }> => {
-  const mapping: Record<string, { source: string; transformCode?: string }> = {};
-
-  if (!raw || typeof raw !== 'object') return mapping;
-
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      if (!item || typeof item !== 'object') continue;
-      const source = (item as any).source;
-      const target = (item as any).dest ?? (item as any).target;
-      if (typeof source !== 'string' || !source.trim() || typeof target !== 'string' || !target.trim()) continue;
-      mapping[target.trim()] = {
-        source: source.trim(),
-        transformCode: typeof (item as any).transformCode === 'string' ? (item as any).transformCode : undefined
-      };
-    }
-  } else {
-    for (const [dest, value] of Object.entries(raw as Record<string, unknown>)) {
-      if (!dest.trim()) continue;
-      if (typeof value === 'string') {
-        mapping[dest.trim()] = { source: value.trim() };
-      } else if (value && typeof value === 'object' && typeof (value as any).source === 'string') {
-        mapping[dest.trim()] = {
-          source: (value as any).source.trim(),
-          transformCode: typeof (value as any).transformCode === 'string' ? (value as any).transformCode : undefined
-        };
-      }
-    }
-  }
-
-  return mapping;
-};
+const canonicalTargets = [
+  { key: 'EmployeeID', label: 'Employee ID', type: 'string', required: true },
+  { key: 'Age', label: 'Age', type: 'number', required: false },
+  { key: 'Attrition', label: 'Attrition Status', type: 'string', required: true },
+  { key: 'Department', label: 'Department', type: 'string', required: true },
+  { key: 'DistanceFromHome', label: 'Distance From Home', type: 'number', required: false },
+  { key: 'Education', label: 'Education Level', type: 'number', required: false },
+  { key: 'EducationField', label: 'Education Field', type: 'string', required: false },
+  { key: 'Gender', label: 'Gender', type: 'string', required: false },
+  { key: 'JobRole', label: 'Job Role', type: 'string', required: true },
+  { key: 'MonthlyIncome', label: 'Monthly Income', type: 'number', required: false },
+  { key: 'NumCompaniesWorked', label: 'Previous Companies', type: 'number', required: false },
+  { key: 'OverTime', label: 'Overtime Status', type: 'string', required: false },
+  { key: 'TotalWorkingYears', label: 'Total Experience', type: 'number', required: false },
+  { key: 'YearsAtCompany', label: 'Tenure Years', type: 'number', required: false }
+];
 
 const MappingPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
-  const [preview, setPreview] = useState<Array<Record<string, unknown>>>([]);
-  const [sourceColumns, setSourceColumns] = useState<string[]>([]);
-  const [mappingRows, setMappingRows] = useState<MappingRow[]>([]);
-  const [importJobs, setImportJobs] = useState<ImportJobSummary[]>([]);
+  const { activeUploadId, activeJob, allJobs, datasets, selectDataset, refreshActiveDataset } = useDataset();
+
+  const queryUploadId = searchParams.get('uploadId') ?? '';
+  const currentUploadId = queryUploadId || activeUploadId || '';
+
+  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
+  const [mappingItems, setMappingItems] = useState<MappingItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [uploadId, setUploadId] = useState('');
-  const [saveMessage, setSaveMessage] = useState('');
-  const [searchFilter, setSearchFilter] = useState('');
-  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [transforming, setTransforming] = useState(false);
+  const [error, setError] = useState('');
+  const [transformError, setTransformError] = useState<{ reason: string; mappedCount: number } | null>(null);
+  const [message, setMessage] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [editingCodeField, setEditingCodeField] = useState<string | null>(null);
+  const [codeBuffer, setCodeBuffer] = useState('');
 
+  // Sync URL query param with DatasetContext
   useEffect(() => {
-    const loadImportJobs = async () => {
-      try {
-        const response = await api.get('/imports');
-        setImportJobs(response.data.jobs ?? []);
-      } catch {
-        // Ignore import history failures.
-      }
-    };
-
-    void loadImportJobs();
-  }, []);
-
-  useEffect(() => {
-    const loadImportData = async () => {
-      const idFromQuery = searchParams.get('uploadId') ?? '';
-      setUploadId(idFromQuery);
-
-      if (!idFromQuery) {
-        setPreview([]);
-        setSourceColumns([]);
-        setMappingRows([]);
-        setError('');
-        setLoading(false);
-        return;
-      }
-
-      setError('');
-      setLoading(true);
-
-      try {
-        const [previewResponse, mappingResponse] = await Promise.all([
-          api.get('/debug/upload-rows', { params: { uploadId: idFromQuery } }),
-          api.get(`/imports/${idFromQuery}`)
-        ]);
-
-        const uploadedPreview = (previewResponse.data.rows ?? []).map((row: { data: Record<string, unknown> }) => row.data ?? row);
-        setPreview(uploadedPreview);
-
-        const jobColumns = mappingResponse.data.job?.columns as string[] | undefined;
-        const selectedColumnsFromJob = mappingResponse.data.job?.selectedColumns as string[] | undefined;
-        const debugColumns = previewResponse.data.columns as string[] | undefined;
-        const derivedColumns: string[] = Array.from(new Set(uploadedPreview.flatMap(Object.keys)));
-
-        const chosenColumns = selectedColumnsFromJob && selectedColumnsFromJob.length
-          ? selectedColumnsFromJob
-          : jobColumns && jobColumns.length
-            ? jobColumns
-            : debugColumns && debugColumns.length
-              ? debugColumns
-              : derivedColumns;
-
-        setSourceColumns(chosenColumns);
-
-        const mappingFromJob = mappingResponse.data.job?.mapping;
-        const rows = buildMappingRows(mappingFromJob, chosenColumns);
-        setMappingRows(rows);
-      } catch (err) {
-        setPreview([]);
-        setSourceColumns([]);
-        setMappingRows([]);
-        setError('Unable to load import mapping data.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void loadImportData();
-  }, [searchParams]);
-
-  useEffect(() => {
-    setSearchFilter('');
-    setExpandedRows({});
-  }, [uploadId]);
-
-  const availableSourceFields = useMemo(() => sourceColumns.length ? sourceColumns : Array.from(new Set(preview.flatMap(Object.keys))), [preview, sourceColumns]);
-  const sampleRow = preview[0] ?? {};
-  const selectedJob = importJobs.find((job) => job.uploadId === uploadId);
-  const oneDatasetAvailable = importJobs.length === 1;
-  
-  // Calculate isAllSelected and isSomeSelected based on mappingRows first
-  const isAllSelectedValue = mappingRows.filter((row) => row.target.trim() !== '').length === mappingRows.length && mappingRows.length > 0;
-  const isSomeSelectedValue = mappingRows.some((row) => row.target.trim() !== '');
-  
-  const visibleRows = useMemo(
-    () => mappingRows
-      .map((row, rowIndex) => ({ ...row, rowIndex }))
-      .filter((row) => row.source.toLowerCase().includes(searchFilter.toLowerCase())),
-    [mappingRows, searchFilter]
-  );
-  
-  const isAllSelected = visibleRows.length > 0 && visibleRows.every((row) => row.target.trim() !== '');
-  const isSomeSelected = visibleRows.some((row) => row.target.trim() !== '');
-
-  useEffect(() => {
-    if (selectAllCheckboxRef.current) {
-      selectAllCheckboxRef.current.indeterminate = isSomeSelected && !isAllSelected;
+    if (queryUploadId && queryUploadId !== activeUploadId) {
+      void selectDataset(queryUploadId);
     }
-  }, [isAllSelected, isSomeSelected]);
+  }, [queryUploadId, activeUploadId, selectDataset]);
 
-  const toggleSelectAll = () => {
-    if (isAllSelected) {
-      const visibleSources = new Set(visibleRows.map((row) => row.source));
-      setMappingRows((current) =>
-        current.map((row) => (visibleSources.has(row.source) ? { ...row, target: '' } : row))
-      );
-    } else {
-      const visibleSources = new Set(visibleRows.map((row) => row.source));
-      setMappingRows((current) =>
-        current.map((row) => (visibleSources.has(row.source) ? { ...row, target: row.source } : row))
-      );
+  const loadJobData = async () => {
+    if (!currentUploadId) {
+      setLoading(false);
+      return;
     }
-  };
 
-  const targetOptions = useMemo(() => {
-    const targets = new Set<string>();
-    mappingRows.forEach((row) => {
-      if (row.target?.trim()) targets.add(row.target.trim());
-    });
-    availableSourceFields.forEach((field) => targets.add(field));
-    return Array.from(targets).sort((a, b) => a.localeCompare(b));
-  }, [availableSourceFields, mappingRows]);
-
-  const selectedTargets = useMemo(
-    () => new Set(mappingRows.filter((row) => row.target.trim()).map((row) => row.target.trim())),
-    [mappingRows]
-  );
-
-  const mappedValues = useMemo(() => {
-    const values: Record<string, unknown> = {};
-    mappingRows.forEach(({ source, target }) => {
-      if (!target.trim()) return;
-      values[target.trim()] = sampleRow[source] ?? '';
-    });
-    return values;
-  }, [mappingRows, sampleRow]);
-
-  const toggleRowExpansion = (source: string) => {
-    setExpandedRows((current) => ({
-      ...current,
-      [source]: !current[source]
-    }));
-  };
-
-  const updateMappingRow = (index: number, changes: Partial<MappingRow>) => {
-    setSaveMessage('');
+    setLoading(true);
     setError('');
-    setMappingRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...changes } : row)));
+    setTransformError(null);
+
+    try {
+      const [jobResp, mappingResp] = await Promise.all([
+        api.get(`/imports/${currentUploadId}`),
+        api.get(`/imports/${currentUploadId}/mapping`).catch(() => ({ data: { mapping: {} } }))
+      ]);
+
+      const job = jobResp.data.job;
+      const cols: string[] = job.columns || [];
+      setAvailableColumns(cols);
+
+      const savedMapping = mappingResp.data.mapping || job.mapping || {};
+
+      // Initialize mapping items based on canonical targets and dataset columns
+      const initialItems: MappingItem[] = canonicalTargets.map((target) => {
+        const savedEntry = savedMapping[target.key];
+        let sourceField = '';
+        let transformCode: string | undefined = undefined;
+        let enabled = false;
+
+        if (savedEntry) {
+          if (typeof savedEntry === 'string') {
+            sourceField = savedEntry;
+            enabled = true;
+          } else if (typeof savedEntry === 'object' && savedEntry.source) {
+            sourceField = savedEntry.source;
+            transformCode = savedEntry.transformCode;
+            enabled = true;
+          }
+        } else {
+          // Auto-match exact name
+          const exactMatch = cols.find((c) => c.toLowerCase() === target.key.toLowerCase());
+          if (exactMatch) {
+            sourceField = exactMatch;
+            enabled = true;
+          }
+        }
+
+        return {
+          target: target.key,
+          source: sourceField,
+          enabled,
+          transformCode
+        };
+      });
+
+      setMappingItems(initialItems);
+    } catch (err: any) {
+      setError(err?.response?.data?.message || 'Failed to load mapping schema.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadJobData();
+  }, [currentUploadId]);
+
+  const handleSourceChange = (targetKey: string, sourceCol: string) => {
+    setMappingItems((prev) =>
+      prev.map((item) =>
+        item.target === targetKey
+          ? { ...item, source: sourceCol, enabled: Boolean(sourceCol) }
+          : item
+      )
+    );
+  };
+
+  const handleToggleEnabled = (targetKey: string) => {
+    setMappingItems((prev) =>
+      prev.map((item) =>
+        item.target === targetKey ? { ...item, enabled: !item.enabled } : item
+      )
+    );
+  };
+
+  const handleAutoMap = () => {
+    setMappingItems((prev) =>
+      prev.map((item) => {
+        const match = availableColumns.find((c) => c.toLowerCase() === item.target.toLowerCase());
+        return match ? { ...item, source: match, enabled: true } : item;
+      })
+    );
+    setMessage('Auto-mapped matching schema columns.');
+  };
+
+  const handleSelectAll = (check: boolean) => {
+    setMappingItems((prev) => prev.map((item) => ({ ...item, enabled: check && Boolean(item.source) })));
   };
 
   const saveMapping = async () => {
-    if (!uploadId) {
-      setError('Cannot save mapping without a selected import.');
-      return;
-    }
-
-    const payload = mappingRows.reduce<Record<string, { source: string; transformCode?: string }>>((acc, row) => {
-      if (!row.target.trim()) return acc;
-      acc[row.target.trim()] = {
-        source: row.source,
-        transformCode: row.transformCode?.trim() || undefined
-      };
-      return acc;
-    }, {});
-
-    if (!Object.keys(payload).length) {
-      setError('Map at least one selected column to a target field before saving.');
-      return;
-    }
-
+    if (!currentUploadId) return;
     setSaving(true);
-    setSaveMessage('');
     setError('');
+    setMessage('');
+
+    const mappingPayload = mappingItems
+      .filter((item) => item.enabled && item.source)
+      .reduce((acc, item) => {
+        acc[item.target] = item.transformCode
+          ? { source: item.source, transformCode: item.transformCode }
+          : item.source;
+        return acc;
+      }, {} as Record<string, any>);
 
     try {
-      await api.patch(`/imports/${uploadId}/mapping`, { mapping: payload });
-      setSaveMessage('Mapping saved successfully.');
-    } catch {
-      setError('Unable to save mapping.');
+      await api.post(`/imports/${currentUploadId}/mapping`, { mapping: mappingPayload });
+      setMessage('Mapping configuration saved successfully.');
+      await refreshActiveDataset();
+    } catch (err: any) {
+      setError(err?.response?.data?.message || 'Unable to save mapping configuration.');
     } finally {
       setSaving(false);
     }
   };
 
-  const runTransform = async () => {
-    if (!uploadId) {
-      setError('Cannot run transform without a selected import.');
-      return;
-    }
-
-    const payload = mappingRows.reduce<Record<string, { source: string; transformCode?: string }>>((acc, row) => {
-      if (!row.target.trim()) return acc;
-      acc[row.target.trim()] = {
-        source: row.source,
-        transformCode: row.transformCode?.trim() || undefined
-      };
-      return acc;
-    }, {});
-
-    if (!Object.keys(payload).length) {
-      setError('Map at least one selected column to a target field before transforming.');
-      return;
-    }
-
-    setSaving(true);
-    setSaveMessage('');
+  const handleRunTransformation = async () => {
+    if (!currentUploadId) return;
+    setTransforming(true);
     setError('');
+    setTransformError(null);
+    setMessage('');
+
+    // First ensure mapping is saved
+    const mappingPayload = mappingItems
+      .filter((item) => item.enabled && item.source)
+      .reduce((acc, item) => {
+        acc[item.target] = item.transformCode
+          ? { source: item.source, transformCode: item.transformCode }
+          : item.source;
+        return acc;
+      }, {} as Record<string, any>);
 
     try {
-      await api.patch(`/imports/${uploadId}/mapping`, { mapping: payload });
-      const response = await api.post(`/imports/${uploadId}/transform`);
-      const sandboxErrors = response.data.sandboxErrors ?? [];
-      setSaveMessage(
-        sandboxErrors.length
-          ? `Transformation complete with ${sandboxErrors.length} script warning(s). Preview is ready.`
-          : 'Transformation complete. Preview is ready.'
-      );
-      navigate(`/preview?uploadId=${uploadId}`);
-    } catch {
-      setError('Unable to run transformation.');
+      await api.post(`/imports/${currentUploadId}/mapping`, { mapping: mappingPayload });
+      const resp = await api.post(`/imports/${currentUploadId}/transform`);
+
+      const failedCount = resp.data.failedRows || 0;
+      const sandboxErrors = resp.data.sandboxErrors || [];
+
+      if (sandboxErrors.length > 0 && failedCount === resp.data.transformedCount) {
+        setTransformError({
+          reason: sandboxErrors[0] || 'Unknown transformation error occurred.',
+          mappedCount: mappingItems.filter((i) => i.enabled).length
+        });
+      } else {
+        setMessage(`Transformation complete (${resp.data.transformedCount?.toLocaleString()} rows processed).`);
+        await refreshActiveDataset();
+        navigate(`/preview?uploadId=${currentUploadId}`);
+      }
+    } catch (err: any) {
+      const mappedCount = mappingItems.filter((i) => i.enabled).length;
+      const backendError = err?.response?.data?.message || err?.response?.data?.error || 'Additional error details are not available.';
+      setTransformError({
+        reason: backendError,
+        mappedCount
+      });
     } finally {
-      setSaving(false);
+      setTransforming(false);
     }
   };
+
+  const openCodeModal = (targetKey: string) => {
+    const item = mappingItems.find((i) => i.target === targetKey);
+    setEditingCodeField(targetKey);
+    setCodeBuffer(item?.transformCode || `// Example: uppercase string or parse number\nreturn String(value).toUpperCase();`);
+  };
+
+  const saveCustomCode = () => {
+    if (!editingCodeField) return;
+    setMappingItems((prev) =>
+      prev.map((item) =>
+        item.target === editingCodeField ? { ...item, transformCode: codeBuffer } : item
+      )
+    );
+    setEditingCodeField(null);
+  };
+
+  const filteredItems = useMemo(() => {
+    return mappingItems.filter((item) => {
+      const matchTarget = item.target.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchSource = item.source.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchTarget || matchSource;
+    });
+  }, [mappingItems, searchQuery]);
+
+  const enabledCount = mappingItems.filter((i) => i.enabled).length;
 
   return (
-    <div className="space-y-8">
-      <section className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 shadow-2xl backdrop-blur-xl">
-        <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
-          <div className="max-w-3xl">
-            <p className="text-sm uppercase tracking-[0.35em] text-cyan-300">Mapping Studio</p>
-            <h1 className="mt-3 text-4xl font-semibold text-white">Define mappings with precision and enterprise control.</h1>
-            <p className="mt-4 text-slate-400">
-              Map selected source columns to your target schema and preview transformed output before final import.
+    <div className="space-y-6">
+      {/* Header Banner */}
+      <div className="saas-card p-6 sm:p-8 bg-gradient-to-r from-theme-surface via-theme-surface-soft to-theme-surface-blue">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-theme-surface-blue border border-theme-border-strong text-theme-primary text-xs font-semibold uppercase tracking-wider mb-2">
+              <Sparkles size={13} />
+              <span>ETL Schema Mapping</span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-bold text-theme-text-primary">
+              Mapping Studio
+            </h1>
+            <p className="mt-1 text-sm text-theme-text-secondary">
+              Map dataset fields to destination schema and apply isolated JavaScript expressions.
             </p>
           </div>
-          <div className="rounded-full border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">Dataset-driven source fields</div>
+
+          {/* Dataset Selector Dropdown */}
+          <div className="flex items-center gap-3">
+            <select
+              value={currentUploadId}
+              onChange={(e) => void selectDataset(e.target.value || null)}
+              className="saas-input text-xs font-medium cursor-pointer min-w-[220px]"
+            >
+              <option value="">Select a Dataset...</option>
+              {datasets.map((d) => (
+                <option key={d.uploadId} value={d.uploadId}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+      </div>
 
-        <div className="mt-8 grid gap-4 sm:grid-cols-[1.1fr_0.9fr]">
-          {oneDatasetAvailable ? (
-            <div className="rounded-[28px] border border-white/10 bg-slate-950/80 p-5">
-              <p className="text-sm font-medium text-slate-300">Dataset</p>
-              <p className="mt-2 text-lg font-semibold text-white">{importJobs[0]?.fileName ?? 'Dataset'}</p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl bg-slate-900/80 p-3 text-sm text-slate-300">
-                  <p className="text-slate-400">Columns</p>
-                  <p className="mt-1 font-semibold text-white">{availableSourceFields.length}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-900/80 p-3 text-sm text-slate-300">
-                  <p className="text-slate-400">Rows</p>
-                  <p className="mt-1 font-semibold text-white">{importJobs[0]?.totalRows?.toLocaleString() ?? '—'}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-900/80 p-3 text-sm text-slate-300">
-                  <p className="text-slate-400">Status</p>
-                  <p className="mt-1 font-semibold text-white">{importJobs[0]?.status ?? 'unknown'}</p>
-                </div>
-              </div>
-              {!uploadId && (
-                <button
-                  type="button"
-                  onClick={() => navigate(`/mapping?uploadId=${importJobs[0]?.uploadId}`)}
-                  className="mt-5 inline-flex items-center rounded-full bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
-                >
-                  Use this dataset
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="rounded-[28px] border border-white/10 bg-slate-950/80 p-5">
-              <label htmlFor="datasetSelect" className="block text-sm font-medium text-slate-300">Select dataset</label>
-              <select
-                id="datasetSelect"
-                value={uploadId}
-                onChange={(event) => navigate(`/mapping?uploadId=${event.target.value}`)}
-                className="mt-3 w-full rounded-2xl border border-white/10 bg-slate-900/90 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
-              >
-                <option value="">Choose a dataset</option>
-                {importJobs.map((job) => (
-                  <option key={job.uploadId} value={job.uploadId}>
-                    {job.fileName} {job.status !== 'completed' ? `(${job.status})` : ''}
-                  </option>
-                ))}
-              </select>
-              {!importJobs.length && (
-                <p className="mt-3 text-sm text-slate-400">No uploaded datasets found. Upload a dataset first to begin mapping.</p>
-              )}
-            </div>
-          )}
+      {/* Success Notification */}
+      {message && (
+        <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs sm:text-sm flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-emerald-600" />
+          <span>{message}</span>
         </div>
-      </section>
-
-      {loading && <div className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 text-slate-300">Loading sample rows...</div>}
-      {error && <div className="rounded-[32px] border border-rose-400/20 bg-rose-500/10 p-6 text-rose-200">{error}</div>}
-
-      {!loading && !error && !uploadId && (
-        <div className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 text-slate-300">Select a dataset to load available columns and enable mapping.</div>
       )}
 
-      {!loading && !error && uploadId && (
-        <div className="grid gap-6 xl:grid-cols-[1.45fr_0.75fr]">
-          <div className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 shadow-2xl">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Current mapping rules</p>
-                <p className="mt-2 text-slate-300">Use selected source columns from your uploaded dataset as the source side for mapping.</p>
-              </div>
-              <div className="inline-flex rounded-full bg-cyan-500/10 px-4 py-2 text-sm text-cyan-200">Detected source columns: {availableSourceFields.length}</div>
-            </div>
+      {/* Generic Error */}
+      {error && !transformError && (
+        <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs sm:text-sm flex items-center gap-2">
+          <AlertCircle size={16} className="text-rose-600 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
 
-            <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0 flex-1">
-                <label htmlFor="searchFields" className="sr-only">Search fields</label>
+      {/* Comprehensive Transformation Error Card (Item 10) */}
+      {transformError && (
+        <div className="saas-card p-6 border-rose-300 dark:border-rose-800 bg-rose-50/50 dark:bg-rose-950/20">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-900/50 text-rose-600 flex items-center justify-center font-bold flex-shrink-0">
+              <AlertCircle size={22} />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-base font-bold text-rose-900 dark:text-rose-200">Transformation failed</h3>
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                <div className="p-3 rounded-lg bg-theme-surface border border-theme-border">
+                  <span className="text-theme-text-muted block text-[11px]">Dataset</span>
+                  <span className="font-semibold text-theme-text-primary">{activeJob?.fileName || 'Active Dataset'}</span>
+                </div>
+                <div className="p-3 rounded-lg bg-theme-surface border border-theme-border">
+                  <span className="text-theme-text-muted block text-[11px]">Stage</span>
+                  <span className="font-semibold text-rose-600">Transformation</span>
+                </div>
+                <div className="p-3 rounded-lg bg-theme-surface border border-theme-border">
+                  <span className="text-theme-text-muted block text-[11px]">Mapping</span>
+                  <span className="font-semibold text-theme-text-primary">{transformError.mappedCount} / {canonicalTargets.length}</span>
+                </div>
+              </div>
+
+              <div className="mt-3 p-3 rounded-lg bg-theme-surface border border-theme-border text-xs">
+                <span className="text-theme-text-muted block text-[11px] font-bold uppercase tracking-wider">Reason</span>
+                <p className="mt-1 font-mono text-rose-600 dark:text-rose-400 break-words">{transformError.reason}</p>
+              </div>
+
+              <div className="mt-4 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setTransformError(null)}
+                  className="btn-secondary text-xs py-2 px-4 rounded-xl"
+                >
+                  Review Mapping
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRunTransformation}
+                  disabled={transforming}
+                  className="btn-primary text-xs py-2 px-4 rounded-xl flex items-center gap-1.5"
+                >
+                  <RotateCw size={13} />
+                  <span>Retry Transformation</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loading State */}
+      {loading && (
+        <div className="saas-card p-12 text-center">
+          <RotateCw size={32} className="mx-auto text-theme-primary animate-spin mb-3" />
+          <h3 className="text-base font-bold text-theme-text-primary">Loading Dataset Schema...</h3>
+          <p className="text-xs text-theme-text-muted mt-1">Preparing mapping studio for the active dataset.</p>
+        </div>
+      )}
+
+      {/* Empty State: No Dataset Selected */}
+      {!currentUploadId && !loading && (
+        <div className="saas-card p-12 text-center">
+          <Layers size={36} className="mx-auto text-theme-text-muted mb-3 opacity-60" />
+          <h3 className="text-base font-bold text-theme-text-primary">No Dataset Selected</h3>
+          <p className="text-xs text-theme-text-muted mt-1 max-w-sm mx-auto">
+            Select a dataset from the dropdown above to bind fields to the canonical schema.
+          </p>
+          <button
+            type="button"
+            onClick={() => navigate('/upload')}
+            className="btn-primary text-xs mt-4 py-2 px-4 rounded-xl"
+          >
+            Upload New Dataset
+          </button>
+        </div>
+      )}
+
+      {/* Mapping Studio Main Workspace */}
+      {currentUploadId && (
+        <div className="saas-card overflow-hidden">
+          {/* Studio Header Toolbar */}
+          <div className="p-4 sm:p-5 border-b border-theme-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-theme-surface-soft">
+            <div className="flex items-center gap-3 flex-1 max-w-md">
+              <div className="relative w-full">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text-muted" />
                 <input
-                  id="searchFields"
-                  type="search"
-                  value={searchFilter}
-                  onChange={(event) => setSearchFilter(event.target.value)}
-                  placeholder="Search fields..."
-                  className="w-full rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
+                  type="text"
+                  placeholder="Filter mapping fields..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="saas-input w-full pl-9 py-1.5 text-xs"
                 />
               </div>
             </div>
 
-            <div className="mt-5 overflow-hidden rounded-[24px] border border-white/10 bg-slate-950/70">
-              <div className="hidden grid-cols-[0.5fr_1.5fr_1.4fr_0.9fr] gap-4 border-b border-white/10 px-4 py-3 text-xs uppercase tracking-[0.24em] text-slate-500 sm:grid">
-                <div className="flex items-center justify-center">
-                  <input
-                    ref={selectAllCheckboxRef}
-                    type="checkbox"
-                    id="selectAll"
-                    checked={isAllSelected}
-                    onChange={toggleSelectAll}
-                    className="h-5 w-5 cursor-pointer accent-cyan-400"
-                  />
-                </div>
-                <div>Source field</div>
-                <div>Target field</div>
-                <div>Action</div>
-              </div>
-
-              <div className="max-h-[720px] overflow-y-auto">
-                {visibleRows.length ? visibleRows.map((row) => {
-                  const expanded = expandedRows[row.source];
-                  const isSelected = row.target.trim() !== '';
-                  return (
-                    <div key={`${row.source}-${row.rowIndex}`} className="border-b border-white/10 px-4 py-4 last:border-none">
-                      <div className="grid gap-3 sm:grid-cols-[0.5fr_1.5fr_1.4fr_0.9fr] sm:items-center">
-                        <div className="flex items-center justify-center">
-                          <input
-                            type="radio"
-                            id={`select-${row.rowIndex}`}
-                            checked={isSelected}
-                            onChange={(event) => {
-                              if (event.target.checked) {
-                                updateMappingRow(row.rowIndex, { target: row.source });
-                              } else {
-                                updateMappingRow(row.rowIndex, { target: '' });
-                              }
-                            }}
-                            className="h-5 w-5 cursor-pointer accent-cyan-400"
-                          />
-                        </div>
-                        <div>
-                          <label htmlFor={`select-${row.rowIndex}`} className="font-medium text-white cursor-pointer">
-                            {row.source}
-                          </label>
-                        </div>
-                        <div>
-                          {isSelected && (
-                            <div className="rounded-2xl border border-white/10 bg-slate-900/90 px-4 py-3 text-slate-100">
-                              {row.target}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between gap-3 sm:justify-end">
-                          {isSelected && (
-                            <button
-                              type="button"
-                              onClick={() => toggleRowExpansion(row.source)}
-                              className="rounded-full border border-white/10 bg-slate-950/90 px-4 py-2 text-sm text-slate-100 transition hover:bg-slate-900"
-                            >
-                              {expanded ? 'Hide transform' : 'Advanced'}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {expanded && isSelected && (
-                        <div className="mt-4 sm:col-span-4">
-                          <textarea
-                            value={row.transformCode ?? ''}
-                            onChange={(event) => updateMappingRow(row.rowIndex, { transformCode: event.target.value })}
-                            placeholder="Optional: custom JS transform, e.g. return value.toUpperCase();"
-                            rows={3}
-                            className="w-full rounded-3xl border border-white/10 bg-slate-900/80 px-4 py-3 font-mono text-xs text-cyan-100 outline-none transition focus:border-cyan-400"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  );
-                }) : (
-                  <div className="px-4 py-8 text-center text-sm text-slate-400">No matching source fields found. Adjust your search or update the dataset selection.</div>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-8 flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <button
+                type="button"
+                onClick={handleAutoMap}
+                className="btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5"
+              >
+                <Sparkles size={13} className="text-theme-primary" />
+                <span>Auto Match</span>
+              </button>
+              <button
+                type="button"
                 onClick={saveMapping}
-                disabled={saving || !mappingRows.length}
-                className="rounded-full bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={saving}
+                className="btn-secondary text-xs py-1.5 px-4 rounded-lg flex items-center gap-1.5"
               >
-                {saving ? 'Saving…' : 'Save mapping'}
+                <Check size={13} />
+                <span>{saving ? 'Saving...' : 'Save Mapping'}</span>
               </button>
               <button
-                onClick={runTransform}
-                disabled={saving || !mappingRows.length}
-                className="rounded-full border border-white/10 bg-slate-900 px-5 py-3 text-sm text-slate-100 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                onClick={handleRunTransformation}
+                disabled={transforming}
+                className="btn-primary text-xs py-1.5 px-4 rounded-lg flex items-center gap-1.5"
               >
-                {saving ? 'Processing…' : 'Run transformation'}
-              </button>
-              <button
-                onClick={() => navigate(`/preview?uploadId=${uploadId}`)}
-                className="rounded-full border border-white/10 bg-slate-900 px-5 py-3 text-sm text-slate-100 transition hover:bg-slate-800"
-              >
-                Go to preview
+                <Play size={13} />
+                <span>{transforming ? 'Transforming...' : 'Run Transformation'}</span>
               </button>
             </div>
-            {saveMessage && <p className="mt-3 text-sm text-emerald-300">{saveMessage}</p>}
           </div>
 
-          <aside className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 shadow-2xl">
-            <p className="text-sm uppercase tracking-[0.35em] text-slate-300">Transformation preview</p>
-            <p className="mt-3 text-slate-400">See the first destination values before applying the mapping to your full dataset.</p>
-            {Object.keys(mappedValues).length ? (
-              <div className="mt-6 overflow-hidden rounded-[24px] border border-white/10 bg-slate-950/70">
-                <div className="grid grid-cols-[1fr_1fr] gap-3 border-b border-white/10 px-4 py-3 text-xs uppercase tracking-[0.24em] text-slate-500">
-                  <div>Source value</div>
-                  <div>Transformed value</div>
-                </div>
-                <div className="divide-y divide-white/10">
-                  {mappingRows.filter((row) => row.target.trim()).map((row) => (
-                    <div key={`${row.source}-preview`} className="grid grid-cols-[1fr_1fr] gap-3 px-4 py-3 text-sm text-slate-200">
-                      <div>
-                        <p className="text-xs text-slate-500">[{row.source}]</p>
-                        <p className="mt-1 truncate">{String(sampleRow[row.source] ?? '—')}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-slate-500">[{row.target.trim()}]</p>
-                        <p className="mt-1 truncate">{String(mappedValues[row.target.trim()] ?? '—')}</p>
-                      </div>
+          {/* Mapping Grid Header */}
+          <div className="grid grid-cols-12 gap-3 px-5 py-3 bg-theme-surface-soft border-b border-theme-border text-[11px] font-bold uppercase tracking-wider text-theme-text-muted">
+            <div className="col-span-1 flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={enabledCount === canonicalTargets.length}
+                onChange={(e) => handleSelectAll(e.target.checked)}
+                className="rounded border-theme-border cursor-pointer"
+              />
+              <span>Use</span>
+            </div>
+            <div className="col-span-4">Target Canonical Field</div>
+            <div className="col-span-5">Source Dataset Column</div>
+            <div className="col-span-2 text-right">Transform Code</div>
+          </div>
+
+          {/* Mapping Rows */}
+          <div className="divide-y divide-theme-border">
+            {filteredItems.map((item) => {
+              const targetMeta = canonicalTargets.find((t) => t.key === item.target);
+              return (
+                <div
+                  key={item.target}
+                  className={`grid grid-cols-12 gap-3 px-5 py-3.5 items-center transition ${item.enabled ? 'bg-theme-surface hover:bg-theme-surface-soft' : 'bg-theme-surface/50 opacity-60'
+                    }`}
+                >
+                  <div className="col-span-1">
+                    <input
+                      type="checkbox"
+                      checked={item.enabled}
+                      onChange={() => handleToggleEnabled(item.target)}
+                      className="rounded border-theme-border cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="col-span-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-theme-text-primary">{item.target}</span>
+                      {targetMeta?.required && (
+                        <span className="text-[10px] text-rose-500 font-bold">*Required</span>
+                      )}
                     </div>
-                  ))}
+                    <p className="text-[11px] text-theme-text-muted mt-0.5">{targetMeta?.label} ({targetMeta?.type})</p>
+                  </div>
+
+                  <div className="col-span-5">
+                    <select
+                      value={item.source}
+                      onChange={(e) => handleSourceChange(item.target, e.target.value)}
+                      className="saas-input w-full text-xs py-1.5 px-3"
+                    >
+                      <option value="">— Select Source Column —</option>
+                      {availableColumns.map((col) => (
+                        <option key={col} value={col}>
+                          {col}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="col-span-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => openCodeModal(item.target)}
+                      className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition ${item.transformCode
+                          ? 'bg-theme-surface-blue border-theme-border-strong text-theme-primary font-semibold'
+                          : 'bg-theme-surface border-theme-border text-theme-text-muted hover:text-theme-text-primary'
+                        }`}
+                    >
+                      <Code size={13} />
+                      <span>{item.transformCode ? 'V8 Active' : '+ Code'}</span>
+                    </button>
+                  </div>
                 </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* V8 Transform Code Editor Drawer / Modal */}
+      {editingCodeField && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="saas-card max-w-xl w-full p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-theme-border pb-3">
+              <div>
+                <h3 className="text-base font-bold text-theme-text-primary">
+                  V8 Transform: {editingCodeField}
+                </h3>
+                <p className="text-xs text-theme-text-muted">
+                  JavaScript function executed per-row. Available arguments: <code className="text-theme-primary">value</code> and <code className="text-theme-primary">row</code>.
+                </p>
               </div>
-            ) : (
-              <div className="mt-6 rounded-3xl border border-white/10 bg-slate-950/70 p-6 text-slate-400">No transformations configured yet.</div>
-            )}
-          </aside>
+            </div>
+
+            <textarea
+              rows={6}
+              value={codeBuffer}
+              onChange={(e) => setCodeBuffer(e.target.value)}
+              className="saas-input w-full font-mono text-xs p-3 leading-relaxed"
+              placeholder="// return value.trim().toLowerCase();"
+            />
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingCodeField(null)}
+                className="btn-secondary text-xs py-2 px-4 rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveCustomCode}
+                className="btn-primary text-xs py-2 px-5 rounded-xl"
+              >
+                Apply Expression
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

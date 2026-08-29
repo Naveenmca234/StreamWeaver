@@ -1,5 +1,13 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export interface IPipelineStage {
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  startedAt?: Date;
+  finishedAt?: Date;
+  error?: string;
+  count?: number;
+}
+
 export interface IImportJob extends Document {
   uploadId: string;
   fileName: string;
@@ -9,7 +17,17 @@ export interface IImportJob extends Document {
   fileSize?: number;
   columns?: string[];
   selectedColumns?: string[];
-  mapping?: Record<string, string>;
+  mapping?: Record<string, any>;
+  cleaningStrategies?: Record<string, { strategy: string; fillValue?: string }>;
+  stages?: {
+    ingestion?: IPipelineStage;
+    cleaning?: IPipelineStage;
+    mapping?: IPipelineStage;
+    transformation?: IPipelineStage;
+    validation?: IPipelineStage;
+  };
+  profile?: any;
+  errorMessage?: string;
   transformedAt?: Date;
   importedAt?: Date;
   importedRows?: number;
@@ -24,6 +42,8 @@ export interface IImportJob extends Document {
     samples?: number;
     savedAt?: Date;
   };
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const importJobSchema = new Schema<IImportJob>(
@@ -37,12 +57,25 @@ const importJobSchema = new Schema<IImportJob>(
     columns: { type: [String], default: [] },
     selectedColumns: { type: [String], default: [] },
     mapping: { type: Schema.Types.Mixed, default: {} },
+    cleaningStrategies: { type: Schema.Types.Mixed, default: {} },
+    stages: {
+      type: Schema.Types.Mixed,
+      default: {
+        ingestion: { status: 'completed' },
+        cleaning: { status: 'pending' },
+        mapping: { status: 'pending' },
+        transformation: { status: 'pending' },
+        validation: { status: 'pending' }
+      }
+    },
+    profile: { type: Schema.Types.Mixed, default: null },
+    errorMessage: { type: String },
     createdBy: { type: String },
     startedAt: { type: Date },
     finishedAt: { type: Date },
+    transformedAt: { type: Date },
     importedAt: { type: Date },
-    importedRows: { type: Number, default: 0 }
-    ,
+    importedRows: { type: Number, default: 0 },
     memoryAudit: { type: Schema.Types.Mixed, default: {} }
   },
   { timestamps: true }

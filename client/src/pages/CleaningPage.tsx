@@ -1,6 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { 
+  FileSearch, 
+  CheckCircle2, 
+  AlertCircle, 
+  Sparkles, 
+  ArrowRight, 
+  Search, 
+  Filter,
+  Check,
+  Zap,
+  RotateCw
+} from 'lucide-react';
 import api from '../services/api';
+import { useDataset } from '../contexts/DatasetContext';
 
 type MissingColumnSummary = {
   name: string;
@@ -27,20 +40,14 @@ type ColumnStrategy = {
   fillValue: string;
 };
 
-const strategyLabels: Record<StrategyChoice, string> = {
-  keep: 'Keep missing values',
-  remove: 'Remove rows',
-  fill: 'Fill manually',
-  mean: 'Fill mean',
-  median: 'Fill median',
-  mode: 'Fill mode'
-};
-
 const CleaningPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [uploadId, setUploadId] = useState('');
-  const [importJobs, setImportJobs] = useState<Array<{ uploadId: string; fileName: string; status: string }>>([]);
+  const { activeUploadId, activeJob, allJobs, datasets, selectDataset, refreshActiveDataset } = useDataset();
+
+  const queryUploadId = searchParams.get('uploadId') ?? '';
+  const currentUploadId = queryUploadId || activeUploadId || '';
+
   const [columns, setColumns] = useState<MissingColumnSummary[]>([]);
   const [summary, setSummary] = useState<MissingDataSummary | null>(null);
   const [strategies, setStrategies] = useState<Record<string, ColumnStrategy>>({});
@@ -51,340 +58,360 @@ const CleaningPage = () => {
   const [fieldSearch, setFieldSearch] = useState('');
   const [showAllColumns, setShowAllColumns] = useState(false);
 
+  // Synchronize URL query parameter with DatasetContext
   useEffect(() => {
-    const loadImportJobs = async () => {
-      try {
-        const response = await api.get('/imports');
-        setImportJobs(response.data.jobs ?? []);
-      } catch {
-        // Ignore import history failures.
-      }
-    };
+    if (queryUploadId && queryUploadId !== activeUploadId) {
+      void selectDataset(queryUploadId);
+    }
+  }, [queryUploadId, activeUploadId, selectDataset]);
 
-    void loadImportJobs();
-  }, []);
-
-  useEffect(() => {
-    const idFromQuery = searchParams.get('uploadId') ?? '';
-    setUploadId(idFromQuery);
-  }, [searchParams]);
-
-  useEffect(() => {
-    const loadMissingSummary = async () => {
-      if (!uploadId) {
-        setColumns([]);
-        setStrategies({});
-        setLoading(false);
-        return;
-      }
-
-      setError('');
-      setMessage('');
-      setLoading(true);
-
-      try {
-        const response = await api.get('/cleaning', { params: { uploadId } });
-        const fetchedColumns: MissingColumnSummary[] = response.data.columns ?? [];
-        const fetchedSummary: MissingDataSummary | null = response.data.summary ?? null;
-        setColumns(fetchedColumns);
-        setSummary(fetchedSummary);
-
-        const initialStrategies = fetchedColumns.reduce((acc, column) => {
-          acc[column.name] = { strategy: 'keep', fillValue: '' };
-          return acc;
-        }, {} as Record<string, ColumnStrategy>);
-        setStrategies(initialStrategies);
-
-        if (!fetchedColumns.length && !fetchedSummary) {
-          setError('No missing data summary is available for this upload.');
-        }
-      } catch (err) {
-        setError('Unable to load missing data summary. Please verify the upload ID and try again.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void loadMissingSummary();
-  }, [uploadId]);
-
-  const handleStrategyChange = (column: string, strategy: StrategyChoice) => {
-    setStrategies((current) => ({
-      ...current,
-      [column]: { ...current[column], strategy }
-    }));
-  };
-
-  const handleFillValueChange = (column: string, fillValue: string) => {
-    setStrategies((current) => ({
-      ...current,
-      [column]: { ...current[column], fillValue }
-    }));
-  };
-
-  const handleSelectDataset = (value: string) => {
-    if (!value) return;
-    navigate(`/cleaning?uploadId=${value}`);
-  };
-
-  const applyStrategy = async (column: string) => {
-    if (!uploadId) return;
-    const current = strategies[column];
-    if (!current) return;
-
-    if (current.strategy === 'fill' && !current.fillValue.trim()) {
-      setError('Please enter a fill value before applying the strategy.');
+  const loadMissingSummary = async () => {
+    if (!currentUploadId) {
+      setColumns([]);
+      setStrategies({});
+      setSummary(null);
+      setLoading(false);
       return;
     }
 
     setError('');
     setMessage('');
-    setApplying(column);
+    setLoading(true);
 
     try {
-      await api.post('/cleaning', {
-        uploadId,
-        column,
+      const response = await api.get('/cleaning', { params: { uploadId: currentUploadId } });
+      const fetchedColumns: MissingColumnSummary[] = response.data.columns ?? [];
+      const fetchedSummary: MissingDataSummary | null = response.data.summary ?? null;
+      const savedStrategies: Record<string, ColumnStrategy> = response.data.strategies ?? {};
+
+      setColumns(fetchedColumns);
+      setSummary(fetchedSummary);
+
+      const initialStrategies = fetchedColumns.reduce((acc, column) => {
+        acc[column.name] = savedStrategies[column.name] || { strategy: 'keep', fillValue: '' };
+        return acc;
+      }, {} as Record<string, ColumnStrategy>);
+
+      setStrategies(initialStrategies);
+    } catch (err: any) {
+      setError(err?.response?.data?.message || 'Unable to load missing value profile.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadMissingSummary();
+  }, [currentUploadId]);
+
+  const filteredColumns = useMemo(() => {
+    return columns.filter((col) => {
+      const matchesSearch = col.name.toLowerCase().includes(fieldSearch.toLowerCase());
+      const matchesMissing = showAllColumns ? true : col.missingValues > 0;
+      return matchesSearch && matchesMissing;
+    });
+  }, [columns, fieldSearch, showAllColumns]);
+
+  const handleStrategyChange = (columnName: string, field: keyof ColumnStrategy, value: string) => {
+    setStrategies((prev) => ({
+      ...prev,
+      [columnName]: {
+        ...prev[columnName],
+        [field]: value
+      }
+    }));
+  };
+
+  const applySingleStrategy = async (columnName: string) => {
+    const current = strategies[columnName];
+    if (!current || !currentUploadId) return;
+
+    setApplying(columnName);
+    setError('');
+    setMessage('');
+
+    try {
+      await api.post(`/cleaning/${currentUploadId}/apply`, {
+        columnName,
         strategy: current.strategy,
-        fillValue: current.strategy === 'fill' ? current.fillValue : undefined
+        fillValue: current.fillValue
       });
-      setMessage(`Applied ${strategyLabels[current.strategy]} to ${column}.`);
-      const response = await api.get('/cleaning', { params: { uploadId } });
-      const refreshed = response.data.columns ?? [];
-      const refreshedSummary: MissingDataSummary | null = response.data.summary ?? null;
-      setColumns(refreshed);
-      setSummary(refreshedSummary);
-    } catch (err) {
-      setError('Unable to apply the missing data strategy. Please try again.');
+      setMessage(`Strategy applied to ${columnName} successfully.`);
+      await loadMissingSummary();
+      await refreshActiveDataset();
+    } catch (err: any) {
+      const backendError = err?.response?.data?.message || err?.response?.data?.error || `Failed to clean ${columnName}`;
+      setError(backendError);
     } finally {
       setApplying('');
     }
   };
 
-  const applyAll = async () => {
-    for (const column of columns.map((column) => column.name)) {
-      const strategy = strategies[column]?.strategy ?? 'keep';
-      if (strategy === 'keep') continue;
-      await applyStrategy(column);
+  const applyAllStrategies = async () => {
+    if (!currentUploadId) return;
+    setApplying('ALL');
+    setError('');
+    setMessage('');
+
+    try {
+      await api.post(`/cleaning/${currentUploadId}/apply-all`, { strategies });
+      setMessage('All cleaning rules applied successfully.');
+      await loadMissingSummary();
+      await refreshActiveDataset();
+    } catch (err: any) {
+      const backendError = err?.response?.data?.message || err?.response?.data?.error || 'Failed to apply cleaning strategies.';
+      setError(backendError);
+    } finally {
+      setApplying('');
     }
   };
 
-  const missingSummary = useMemo(() => {
-    if (!summary) {
-      return {
-        totalRows: 0,
-        rowsWithMissingData: 0,
-        completeRows: 0,
-        totalMissingValues: 0,
-        missingPercentage: 0,
-        totalColumns: columns.length
-      };
-    }
-
-    return {
-      ...summary,
-      totalColumns: columns.length
-    };
-  }, [summary, columns.length]);
-
-  const visibleColumns = useMemo(
-    () => columns
-      .filter((column) => showAllColumns || column.missingValues > 0)
-      .filter((column) => column.name.toLowerCase().includes(fieldSearch.toLowerCase())),
-    [columns, showAllColumns, fieldSearch]
-  );
-
   return (
-    <div className="space-y-8">
-      <section className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 shadow-2xl backdrop-blur-xl">
-        <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
-          <div className="max-w-3xl">
-            <p className="text-sm uppercase tracking-[0.3em] text-cyan-300">Data cleaning</p>
-            <h1 className="mt-3 text-4xl font-semibold text-white">Resolve missing values before mapping.</h1>
-            <p className="mt-4 text-slate-400">Choose keep, remove, or smart fill strategies to prepare your dataset for reliable transformation and downstream analytics.</p>
+    <div className="space-y-6">
+      {/* Header Banner */}
+      <div className="saas-card p-6 sm:p-8 bg-gradient-to-r from-theme-surface via-theme-surface-soft to-theme-surface-blue">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-theme-surface-blue border border-theme-border-strong text-theme-primary text-xs font-semibold uppercase tracking-wider mb-2">
+              <Sparkles size={13} />
+              <span>Data Profiling</span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-bold text-theme-text-primary">
+              Clean Data
+            </h1>
+            <p className="mt-1 text-sm text-theme-text-secondary">
+              Profile schema completeness, impute missing values, and configure column-level clean rules.
+            </p>
           </div>
-        </div>
-      </section>
 
-      <div className="mt-4">
-        <label htmlFor="datasetSelect" className="block text-sm font-medium text-slate-300">Select dataset</label>
-        <div className="mt-2 flex gap-2">
-          <select
-            id="datasetSelect"
-            value={uploadId}
-            onChange={(event) => handleSelectDataset(event.target.value)}
-            className="w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900/90 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
-          >
-            <option value="">Choose a dataset</option>
-            {importJobs.map((job) => (
-              <option key={job.uploadId} value={job.uploadId}>
-                {job.fileName} {job.status !== 'completed' ? `(${job.status})` : ''}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => handleSelectDataset(uploadId)}
-            disabled={!uploadId}
-            className="rounded-full border border-white/10 bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Load dataset
-          </button>
+          {/* Dataset Selector Dropdown */}
+          <div className="flex items-center gap-3">
+            <select
+              value={currentUploadId}
+              onChange={(e) => void selectDataset(e.target.value || null)}
+              className="saas-input text-xs font-medium cursor-pointer min-w-[220px]"
+            >
+              <option value="">Select a Dataset...</option>
+              {datasets.map((d) => (
+                <option key={d.uploadId} value={d.uploadId}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+            {currentUploadId && (
+              <button
+                type="button"
+                onClick={() => navigate(`/mapping?uploadId=${currentUploadId}`)}
+                className="btn-primary text-xs py-2 px-3.5 rounded-xl whitespace-nowrap"
+              >
+                <span>Mapping Studio</span>
+                <ArrowRight size={14} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {!uploadId && (
-        <div className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 text-slate-300">
-          <p className="text-lg font-semibold text-white">No upload selected.</p>
-          <p className="mt-3 text-slate-400">Start with an import in the Upload workspace, then return here to clean missing values before mapping.</p>
-          <button onClick={() => navigate('/upload')} className="mt-6 rounded-full bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400">Go to upload</button>
+      {/* Messages */}
+      {message && (
+        <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs sm:text-sm flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-emerald-600" />
+          <span>{message}</span>
         </div>
       )}
 
-      {loading && uploadId && <div className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 text-slate-300">Loading missing data summary...</div>}
-      {error && <div className="rounded-[32px] border border-rose-400/20 bg-rose-500/10 p-6 text-rose-200">{error}</div>}
-      {message && <div className="rounded-[32px] border border-cyan-400/20 bg-cyan-500/10 p-6 text-cyan-200">{message}</div>}
+      {error && (
+        <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs sm:text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={16} className="text-rose-600 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={loadMissingSummary}
+            className="btn-secondary text-xs py-1 px-3 rounded-lg self-start sm:self-auto flex items-center gap-1"
+          >
+            <RotateCw size={12} />
+            <span>Retry</span>
+          </button>
+        </div>
+      )}
 
-      {!loading && uploadId && columns.length === 0 && !error && (
-        <div className="rounded-[32px] border border-white/10 bg-slate-900/80 p-8">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-white font-semibold">No missing values detected</p>
-              <p className="mt-2 text-slate-400">Your dataset is clean and ready for mapping.</p>
+      {/* Summary KPI Cards */}
+      {summary && (
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4">
+          <div className="saas-card p-4 bg-theme-surface">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-theme-text-muted">Total Rows</span>
+            <p className="text-xl font-bold text-theme-text-primary mt-1">{summary.totalRows.toLocaleString()}</p>
+          </div>
+          <div className="saas-card p-4 bg-theme-surface">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-theme-text-muted">Complete Rows</span>
+            <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400 mt-1">{summary.completeRows.toLocaleString()}</p>
+          </div>
+          <div className="saas-card p-4 bg-theme-surface">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-theme-text-muted">Rows with Nulls</span>
+            <p className="text-xl font-bold text-amber-600 dark:text-amber-400 mt-1">{summary.rowsWithMissingData.toLocaleString()}</p>
+          </div>
+          <div className="saas-card p-4 bg-theme-surface">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-theme-text-muted">Total Nulls</span>
+            <p className="text-xl font-bold text-rose-600 dark:text-rose-400 mt-1">{summary.totalMissingValues.toLocaleString()}</p>
+          </div>
+          <div className="saas-card p-4 bg-theme-surface-blue border-theme-border-strong">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-theme-primary">Completeness</span>
+            <p className="text-xl font-bold text-theme-primary mt-1">
+              {(100 - (summary.missingPercentage ?? 0)).toFixed(1)}%
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State: No Dataset Selected */}
+      {!currentUploadId && !loading && (
+        <div className="saas-card p-12 text-center">
+          <FileSearch size={36} className="mx-auto text-theme-text-muted mb-3 opacity-60" />
+          <h3 className="text-base font-bold text-theme-text-primary">No Dataset Selected</h3>
+          <p className="text-xs text-theme-text-muted mt-1 max-w-sm mx-auto">
+            Choose an existing upload from the dropdown above or upload a new file to start profiling missing data.
+          </p>
+          <button
+            type="button"
+            onClick={() => navigate('/upload')}
+            className="btn-primary text-xs mt-4 py-2 px-4 rounded-xl"
+          >
+            Upload New Dataset
+          </button>
+        </div>
+      )}
+
+      {/* Clean Dataset State: No Missing Values */}
+      {currentUploadId && !loading && columns.length === 0 && !error && (
+        <div className="saas-card p-8 border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/20">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/60 text-emerald-600 flex items-center justify-center font-bold">
+                ✓
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-theme-text-primary">No Missing Values Detected</h3>
+                <p className="text-xs text-theme-text-muted mt-0.5">Your dataset is 100% complete and ready for mapping.</p>
+              </div>
             </div>
             <button
               type="button"
-              onClick={() => navigate(`/mapping?uploadId=${uploadId}`)}
-              className="rounded-full bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 whitespace-nowrap"
+              onClick={() => navigate(`/mapping?uploadId=${currentUploadId}`)}
+              className="btn-primary text-xs py-2.5 px-5 rounded-xl whitespace-nowrap"
             >
-              Continue to mapping →
+              Continue to Mapping →
             </button>
           </div>
         </div>
       )}
 
-      {!loading && uploadId && columns.length > 0 && (
-        <div className="space-y-6">
-          <div className="rounded-[28px] border border-white/10 bg-slate-950/80 p-6 shadow-lg">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.3em] text-cyan-300">Data quality summary</p>
-                <p className="mt-2 text-slate-400">Overview of missing values and dataset readiness before mapping.</p>
+      {/* Column Rules & Imputation Table */}
+      {currentUploadId && columns.length > 0 && (
+        <div className="saas-card overflow-hidden">
+          {/* Table Toolbar */}
+          <div className="p-4 sm:p-5 border-b border-theme-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-theme-surface-soft">
+            <div className="flex items-center gap-2 flex-1 max-w-md">
+              <div className="relative w-full">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text-muted" />
+                <input
+                  type="text"
+                  placeholder="Filter column name..."
+                  value={fieldSearch}
+                  onChange={(e) => setFieldSearch(e.target.value)}
+                  className="saas-input w-full pl-9 py-1.5 text-xs"
+                />
               </div>
+              <button
+                type="button"
+                onClick={() => setShowAllColumns(!showAllColumns)}
+                className={`btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5 whitespace-nowrap ${
+                  showAllColumns ? 'bg-theme-surface-blue border-theme-border-strong text-theme-primary' : ''
+                }`}
+              >
+                <Filter size={13} />
+                <span>{showAllColumns ? 'All Columns' : 'Only Missing'}</span>
+              </button>
             </div>
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-              <div className="rounded-[24px] bg-slate-900/80 p-5">
-                <p className="text-sm text-slate-400">Total rows</p>
-                <p className="mt-3 text-2xl font-semibold text-white">{missingSummary.totalRows.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] bg-slate-900/80 p-5">
-                <p className="text-sm text-slate-400">Rows with missing data</p>
-                <p className="mt-3 text-2xl font-semibold text-white">{missingSummary.rowsWithMissingData.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] bg-slate-900/80 p-5">
-                <p className="text-sm text-slate-400">Complete rows</p>
-                <p className="mt-3 text-2xl font-semibold text-white">{missingSummary.completeRows.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] bg-slate-900/80 p-5">
-                <p className="text-sm text-slate-400">Total missing values</p>
-                <p className="mt-3 text-2xl font-semibold text-white">{missingSummary.totalMissingValues.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] bg-slate-900/80 p-5">
-                <p className="text-sm text-slate-400">Missing data rate</p>
-                <p className="mt-3 text-2xl font-semibold text-white">{missingSummary.missingPercentage.toFixed(2)}%</p>
-              </div>
-            </div>
+
+            <button
+              type="button"
+              onClick={applyAllStrategies}
+              disabled={applying === 'ALL'}
+              className="btn-primary text-xs py-2 px-4 rounded-xl flex items-center gap-2 whitespace-nowrap"
+            >
+              <Zap size={14} />
+              <span>{applying === 'ALL' ? 'Applying...' : 'Apply All Rules'}</span>
+            </button>
           </div>
 
-          <div className="overflow-hidden rounded-[32px] border border-white/10 bg-slate-900/80 shadow-2xl">
-            <div className="flex flex-col gap-4 border-b border-white/10 bg-slate-950/80 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.3em] text-slate-400">Fields requiring attention</p>
-                <p className="mt-2 text-sm text-slate-300">Only columns with missing values are shown by default.</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="min-w-[220px]">
-                  <input
-                    type="search"
-                    value={fieldSearch}
-                    onChange={(e) => setFieldSearch(e.target.value)}
-                    placeholder="Search fields..."
-                    className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowAllColumns((current) => !current)}
-                  className="rounded-full border border-white/10 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 transition hover:bg-slate-900"
-                >
-                  {showAllColumns ? 'Show only missing' : 'Show all columns'}
-                </button>
-              </div>
-            </div>
+          {/* Table Rows */}
+          <div className="divide-y divide-theme-border overflow-x-auto">
+            {filteredColumns.map((col) => {
+              const currentStrategy = strategies[col.name]?.strategy ?? 'keep';
+              const fillVal = strategies[col.name]?.fillValue ?? '';
+              const isApplyingThis = applying === col.name;
 
-            <div className="grid min-w-full grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_1.6fr_1.2fr] gap-4 border-b border-white/10 px-4 py-4 text-sm uppercase tracking-[0.18em] text-slate-400">
-              <div>Field</div>
-              <div>Missing</div>
-              <div>Rate</div>
-              <div>Type</div>
-              <div>Sample values</div>
-              <div>Strategy</div>
-            </div>
-            <div className="divide-y divide-white/5">
-              {visibleColumns.map((column) => {
-                const current = strategies[column.name] ?? { strategy: 'keep', fillValue: '' };
-                return (
-                  <div key={column.name} className="grid min-w-full grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_1.6fr_1.2fr] gap-4 px-4 py-4 text-sm text-slate-200 items-center">
-                    <div className="font-medium text-white">{column.name}</div>
-                    <div>{column.missingValues}</div>
-                    <div>{column.missingPercentage}%</div>
-                    <div>{column.type}</div>
-                    <div className="text-slate-400">{column.sampleValues.slice(0, 3).map((value, idx) => <span key={idx}>{String(value)}{idx < column.sampleValues.length - 1 ? ', ' : ''}</span>)}</div>
-                    <div className="space-y-3">
-                      <select
-                        value={current.strategy}
-                        onChange={(e) => handleStrategyChange(column.name, e.target.value as StrategyChoice)}
-                        className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-slate-200 outline-none focus:border-cyan-400"
-                      >
-                        {Object.entries(strategyLabels).map(([value, label]) => (
-                          <option key={value} value={value}>{label}</option>
-                        ))}
-                      </select>
-                      {current.strategy === 'fill' && (
-                        <input
-                          type="text"
-                          value={current.fillValue}
-                          onChange={(event) => handleFillValueChange(column.name, event.target.value)}
-                          placeholder="Fill value"
-                          className="w-full rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-slate-200 outline-none focus:border-cyan-400"
-                        />
-                      )}
+              return (
+                <div key={col.name} className="p-4 sm:p-5 hover:bg-theme-surface-soft transition flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  {/* Column Metadata */}
+                  <div className="min-w-[240px]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-theme-text-primary">{col.name}</span>
+                      <span className="px-2 py-0.5 rounded-md bg-theme-surface-soft border border-theme-border text-[10px] uppercase font-bold text-theme-text-muted">
+                        {col.type}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 mt-1.5 text-xs text-theme-text-muted">
+                      <span>Nulls: <strong className="text-rose-600 dark:text-rose-400">{col.missingValues.toLocaleString()}</strong> ({col.missingPercentage.toFixed(1)}%)</span>
+                      <span>•</span>
+                      <span>Complete: {col.completeCount.toLocaleString()}</span>
                     </div>
                   </div>
-                );
-              })}
-              {visibleColumns.length === 0 && (
-                <div className="px-4 py-8 text-center text-sm text-slate-400">No columns match the filter. Toggle show all columns or update your search.</div>
-              )}
-            </div>
-          </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={applyAll}
-              disabled={!columns.length || Boolean(applying)}
-              className="rounded-full bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-50"
-            >
-              {applying ? 'Applying…' : 'Apply Selected Strategies'}
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate(`/mapping?uploadId=${uploadId}`)}
-              className="rounded-full border border-white/10 bg-slate-950/90 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
-            >
-              Continue to mapping →
-            </button>
+                  {/* Strategy Controls */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <select
+                      value={currentStrategy}
+                      onChange={(e) => handleStrategyChange(col.name, 'strategy', e.target.value as StrategyChoice)}
+                      className="saas-input text-xs py-1.5 px-3 min-w-[170px]"
+                    >
+                      <option value="keep">Keep missing values</option>
+                      <option value="remove">Remove rows with nulls</option>
+                      <option value="fill">Fill with custom value</option>
+                      {col.type === 'number' && (
+                        <>
+                          <option value="mean">Impute Mean (average)</option>
+                          <option value="median">Impute Median</option>
+                        </>
+                      )}
+                      <option value="mode">Impute Mode (frequent)</option>
+                    </select>
+
+                    {currentStrategy === 'fill' && (
+                      <input
+                        type="text"
+                        placeholder="Enter default fill value..."
+                        value={fillVal}
+                        onChange={(e) => handleStrategyChange(col.name, 'fillValue', e.target.value)}
+                        className="saas-input text-xs py-1.5 px-3 w-48"
+                      />
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => applySingleStrategy(col.name)}
+                      disabled={isApplyingThis}
+                      className="btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1"
+                    >
+                      <Check size={13} />
+                      <span>{isApplyingThis ? 'Applying...' : 'Apply'}</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

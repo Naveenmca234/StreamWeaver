@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Sparkles, ShieldCheck, Database, Layers, ArrowRight, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 const allowedDomains = ['gmail.com', 'kongu.edu'];
@@ -26,7 +27,7 @@ const AuthPage = () => {
     e.preventDefault();
     setError('');
     if (!isEmailValid(email) || password.length < 6) {
-      setError('Invalid email or password.');
+      setError('Please enter a valid email and password (minimum 6 characters).');
       return;
     }
 
@@ -54,71 +55,127 @@ const AuthPage = () => {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 px-6 py-16 text-slate-100">
-      <div className="pointer-events-none absolute -left-24 top-10 h-72 w-72 rounded-full bg-cyan-500/10 blur-3xl" />
-      <div className="pointer-events-none absolute right-0 top-32 h-80 w-80 rounded-full bg-violet-500/10 blur-3xl" />
-
-      <div className="relative z-10 grid w-full max-w-5xl grid-cols-1 gap-10 rounded-[32px] border border-white/10 bg-slate-900/90 p-8 shadow-2xl backdrop-blur-xl lg:grid-cols-[0.9fr_0.7fr]">
-        <div className="space-y-6">
+    <div className="relative flex min-h-screen items-center justify-center bg-theme-bg px-4 py-12 text-theme-text-primary">
+      <div className="relative z-10 grid w-full max-w-4xl grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-6 items-stretch">
+        {/* Left Side: Brand Overview */}
+        <div className="saas-card p-8 sm:p-10 flex flex-col justify-between bg-gradient-to-br from-theme-surface via-theme-surface-soft to-theme-surface-blue">
           <div>
-            <p className="text-sm uppercase tracking-[0.3em] text-cyan-300">StreamWeaver</p>
-            <h2 className="mt-2 text-3xl font-semibold text-white">Access your premium ETL workspace</h2>
-            <p className="mt-4 text-sm leading-6 text-slate-400">
-              Securely sign in to upload files, define mappings, validate data, and monitor import history from a modern interface.
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-sky-400 flex items-center justify-center text-white shadow-md shadow-cyan-500/20">
+                <Sparkles size={20} className="text-white" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-theme-text-primary">StreamWeaver</h1>
+                <p className="text-[11px] font-semibold text-theme-primary uppercase tracking-wider">Enterprise ETL</p>
+              </div>
+            </div>
+
+            <h2 className="text-2xl sm:text-3xl font-bold text-theme-text-primary tracking-tight">
+              Access your modern data pipeline workspace
+            </h2>
+            <p className="mt-3 text-sm text-theme-text-secondary leading-relaxed">
+              Stream, profile, map, transform, and validate large CSV & JSON datasets with zero RAM bottleneck.
             </p>
           </div>
-          <div className="rounded-[28px] border border-white/10 bg-slate-950/80 p-6 shadow-xl">
-            <p className="text-sm uppercase tracking-[0.3em] text-slate-500">Why StreamWeaver</p>
-            <ul className="mt-4 space-y-3 text-sm text-slate-300">
-              <li>• End-to-end data flows with instant preview.</li>
-              <li>• Safe transformation sandbox and validation.</li>
-              <li>• Fast imports with streaming support.</li>
-            </ul>
+
+          <div className="mt-8 space-y-3">
+            <div className="p-3.5 rounded-xl bg-theme-surface border border-theme-border flex items-center gap-3">
+              <Database size={18} className="text-theme-primary flex-shrink-0" />
+              <span className="text-xs font-semibold text-theme-text-secondary">Chunked streaming ingestion up to 5GB</span>
+            </div>
+            <div className="p-3.5 rounded-xl bg-theme-surface border border-theme-border flex items-center gap-3">
+              <Layers size={18} className="text-theme-primary flex-shrink-0" />
+              <span className="text-xs font-semibold text-theme-text-secondary">Visual mapping studio & V8 sandbox transforms</span>
+            </div>
+            <div className="p-3.5 rounded-xl bg-theme-surface border border-theme-border flex items-center gap-3">
+              <ShieldCheck size={18} className="text-emerald-600 flex-shrink-0" />
+              <span className="text-xs font-semibold text-theme-text-secondary">Automated quality validation & governance</span>
+            </div>
           </div>
         </div>
 
-        <div className="rounded-[28px] border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur-xl">
-          <div className="mb-6 flex rounded-full border border-white/10 bg-slate-900/70 p-1">
+        {/* Right Side: Login / Register Form */}
+        <div className="saas-card p-8 sm:p-10 flex flex-col justify-center bg-theme-surface">
+          {/* Mode Switcher Pills */}
+          <div className="mb-6 flex rounded-xl border border-theme-border bg-theme-surface-soft p-1">
             <button
-              className={`flex-1 rounded-full px-4 py-3 text-sm font-medium transition ${mode === 'login' ? 'bg-cyan-400 text-slate-950' : 'text-slate-300 hover:text-white'}`}
+              type="button"
+              className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                mode === 'login'
+                  ? 'bg-theme-surface text-theme-primary shadow-xs'
+                  : 'text-theme-text-muted hover:text-theme-text-primary'
+              }`}
               onClick={() => setMode('login')}
             >
-              Login
+              Sign In
             </button>
             <button
-              className={`flex-1 rounded-full px-4 py-3 text-sm font-medium transition ${mode === 'register' ? 'bg-cyan-400 text-slate-950' : 'text-slate-300 hover:text-white'}`}
+              type="button"
+              className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                mode === 'register'
+                  ? 'bg-theme-surface text-theme-primary shadow-xs'
+                  : 'text-theme-text-muted hover:text-theme-text-primary'
+              }`}
               onClick={() => setMode('register')}
             >
-              Register
+              Create Account
             </button>
           </div>
 
+          {error && (
+            <div className="mb-5 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
+              <AlertCircle size={15} className="flex-shrink-0 text-rose-600" />
+              <span>{error}</span>
+            </div>
+          )}
+
           <form className="space-y-4" onSubmit={submit}>
             {mode === 'register' && (
-              <input
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
-                placeholder="Full name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
+              <div>
+                <label className="block text-xs font-semibold text-theme-text-muted mb-1.5 uppercase tracking-wider">
+                  Full Name
+                </label>
+                <input
+                  className="saas-input w-full"
+                  placeholder="e.g. Naveen"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
             )}
-            <input
-              className="w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
-              placeholder="Email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-            <input
-              className="w-full rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-slate-100 outline-none transition focus:border-cyan-400"
-              placeholder="Password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            {error && <p className="text-sm text-rose-400">{error}</p>}
-            <button className="w-full rounded-2xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300">
-              Continue
+
+            <div>
+              <label className="block text-xs font-semibold text-theme-text-muted mb-1.5 uppercase tracking-wider">
+                Email Address
+              </label>
+              <input
+                className="saas-input w-full"
+                placeholder="name@example.com"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-theme-text-muted mb-1.5 uppercase tracking-wider">
+                Password
+              </label>
+              <input
+                className="saas-input w-full"
+                placeholder="••••••••"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="btn-primary w-full py-2.5 rounded-xl text-xs sm:text-sm mt-2 flex items-center justify-center gap-1.5"
+            >
+              <span>{mode === 'login' ? 'Sign In to Workspace' : 'Create Account'}</span>
+              <ArrowRight size={15} />
             </button>
           </form>
         </div>

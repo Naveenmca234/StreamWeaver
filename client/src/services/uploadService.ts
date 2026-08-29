@@ -9,6 +9,7 @@ export interface UploadResult {
   preview: Array<Record<string, unknown>>;
   columns?: string[];
   uploadId: string;
+  profile?: any;
 }
 
 const uploadFile = async (file: File, clientUploadId: string): Promise<UploadResult> => {

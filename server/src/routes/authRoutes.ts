@@ -46,6 +46,7 @@ router.post('/register', async (req, res) => {
     const token = createToken({ id: (user as any)._id ? String((user as any)._id) : (user as any).id, role: (user as any).role || 'user', email: (user as any).email || email });
     res.status(201).json({ token, user: { id: (user as any)._id ? String((user as any)._id) : (user as any).id, name: (user as any).name || name, email: (user as any).email || email, role: (user as any).role || 'user' } });
   } catch (error) {
+    console.error('Registration error:', error);
     res.status(500).json({ message: 'Registration failed' });
   }
 });
@@ -68,6 +69,7 @@ router.post('/login', async (req, res) => {
     const token = createToken({ id: (user as any)._id ? String((user as any)._id) : user.id, role: (user as any).role || 'user', email: (user as any).email });
     res.json({ token, user: { id: (user as any)._id ? String((user as any)._id) : user.id, name: user.name, email: user.email, role: (user as any).role || 'user' } });
   } catch (error) {
+    console.error('Login error:', error);
     res.status(500).json({ message: 'Login failed' });
   }
 });

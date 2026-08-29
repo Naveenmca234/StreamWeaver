@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import http from 'http';
 import path from 'path';
+import dns from 'dns';
 import { Server } from 'socket.io';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import authRoutes from './routes/authRoutes';
@@ -13,9 +14,24 @@ import importRoutes from './routes/importRoutes';
 import validationRoutes from './routes/validationRoutes';
 import transformedRoutes from './routes/transformedRoutes';
 import cleaningRoutes from './routes/cleaningRoutes';
+import dashboardRoutes from './routes/dashboardRoutes';
 import { registerSocketHandlers } from './socket/socketHandler';
 
 dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
+// On Windows, Node c-ares DNS resolver can default to [ '127.0.0.1' ], breaking SRV lookups for mongodb+srv://
+if (process.platform === 'win32') {
+  try {
+    const servers = dns.getServers();
+    if (servers.length === 1 && servers[0] === '127.0.0.1') {
+      dns.setServers(['172.16.1.246', '172.16.1.247', '172.16.1.248']);
+    }
+  } catch {
+    // ignore
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -36,6 +52,7 @@ app.use('/api/cleaning', cleaningRoutes);
 app.use('/api/imports', importRoutes);
 app.use('/api/validations', validationRoutes);
 app.use('/api/transformed', transformedRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 // Serve the built React client when it's been built (npm run build), so
 // the whole app can run from a single process with `npm start`.
@@ -63,7 +80,22 @@ const validateMongoWrite = async () => {
 const startServer = async () => {
   try {
     if (MONGO_URI) {
-      await mongoose.connect(MONGO_URI);
+      try {
+        await mongoose.connect(MONGO_URI);
+      } catch (connErr) {
+        if (MONGO_URI.includes('streamweaver.hkpk18x.mongodb.net')) {
+          const directUri = MONGO_URI
+            .replace('mongodb+srv://', 'mongodb://')
+            .replace(
+              'streamweaver.hkpk18x.mongodb.net',
+              'ac-k14cdig-shard-00-00.hkpk18x.mongodb.net:27017,ac-k14cdig-shard-00-01.hkpk18x.mongodb.net:27017,ac-k14cdig-shard-00-02.hkpk18x.mongodb.net:27017'
+            ) + (MONGO_URI.includes('ssl=true') ? '' : (MONGO_URI.includes('?') ? '&ssl=true&authSource=admin' : '?ssl=true&authSource=admin'));
+          console.warn('SRV connection attempt failed, trying direct replica set endpoints...');
+          await mongoose.connect(directUri);
+        } else {
+          throw connErr;
+        }
+      }
       console.log('MongoDB connected using environment URI');
       await validateMongoWrite();
     } else {

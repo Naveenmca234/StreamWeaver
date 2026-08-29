@@ -11,6 +11,10 @@ const cleanup = async () => {
   try {
     console.log('Connected to MongoDB');
     const db = mongoose.connection.db;
+    if (!db) {
+      console.error('MongoDB database instance is not connected');
+      return;
+    }
 
     // Get all collections
     const collections = await db.listCollections().toArray();
@@ -20,7 +24,7 @@ const cleanup = async () => {
       const col = db.collection(collection.name);
       const count = await col.countDocuments();
       try {
-        const stats = await db.collection(collection.name).stats();
+        const stats = await (db.collection(collection.name) as any).stats();
         const sizeInMB = (stats.size / (1024 * 1024)).toFixed(2);
         console.log(`${collection.name}: ${count} docs, ${sizeInMB} MB`);
       } catch {

@@ -4,14 +4,14 @@ let ivm: any = null;
 
 const loadIsolatedVm = async () => {
   if (ivm !== null) return ivm;
-    try {
-      // dynamic import; if native addon isn't present the import will fail
-      // and we'll fall back to the built-in vm implementation.
-      // Silence the compiler about missing declaration files for the
-      // optional native dependency.
-      // @ts-ignore
-      ivm = await import('isolated-vm');
-    } catch {
+  try {
+    // dynamic import; if native addon isn't present the import will fail
+    // and we'll fall back to the built-in vm implementation.
+    // Silence the compiler about missing declaration files for the
+    // optional native dependency.
+    // @ts-ignore
+    ivm = await import('isolated-vm');
+  } catch {
     ivm = null;
   }
   return ivm;

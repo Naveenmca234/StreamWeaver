@@ -16,6 +16,7 @@ import ImportJob from '../models/ImportJob';
 import ValidationRecord from '../models/ValidationRecord';
 import { requireAuth, AuthedRequest } from '../middleware/authMiddleware';
 import { BatchTransformStream, RowNumberingStream, ByteCounterStream } from '../streams/batchTransformStream';
+import { generateDatasetProfile } from './profilingRoutes';
 
 const router = Router();
 const upload = multer({ dest: 'uploads/' });
@@ -132,7 +133,7 @@ const validateRow = (row: Record<string, unknown>, uploadId: string, rowNumber: 
     records.push({ uploadId, rowNumber, field: 'created_at', message: 'Date field is invalid', severity: 'warning', data: row });
   }
 
-  if (!row.name && !row.fullName && !row.firstName) {
+  if (('name' in row || 'fullName' in row || 'firstName' in row) && !row.name && !row.fullName && !row.firstName) {
     records.push({ uploadId, rowNumber, field: 'name', message: 'Name field is missing', severity: 'warning', data: row });
   }
 
@@ -231,7 +232,29 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthedRequest, 
   const owner = req.user?.email || req.user?.id;
   const startedAt = new Date();
 
-  const job = await ImportJob.create({
+  // Idempotency: Check if an import job with this uploadId already exists
+  let job = await ImportJob.findOne({ uploadId });
+  if (job) {
+    if (job.status === 'completed') {
+      const preview = await UploadRow.find({ uploadId }).sort({ rowNumber: 1 }).limit(10).lean();
+      return res.json({
+        message: 'File processed',
+        fileName: job.fileName,
+        total: job.totalRows,
+        totalRows: job.totalRows,
+        failedRows: job.failedRows,
+        preview: preview.map((p) => p.data),
+        columns: job.columns,
+        uploadId: job.uploadId,
+        profile: job.profile
+      });
+    }
+    if (job.status === 'processing') {
+      return res.status(409).json({ message: 'Upload is currently being processed', uploadId });
+    }
+  }
+
+  job = await ImportJob.create({
     uploadId,
     fileName,
     status: 'processing',
@@ -252,54 +275,54 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthedRequest, 
   let lastEmit = 0;
 
   const emitProgress = (bytesRead: number, force = false) => {
-      if (!io) return;
-      const now = Date.now();
+    if (!io) return;
+    const now = Date.now();
 
-      const elapsedSeconds = Math.max((now - startedAt.getTime()) / 1000, 0.001);
-      const progress = fileSize > 0 ? Math.min(100, Math.round((bytesRead / fileSize) * 100)) : 0;
-      const mu = process.memoryUsage();
-      const memoryUsage = { rss: mu.rss, heapTotal: mu.heapTotal, heapUsed: mu.heapUsed };
+    const elapsedSeconds = Math.max((now - startedAt.getTime()) / 1000, 0.001);
+    const progress = fileSize > 0 ? Math.min(100, Math.round((bytesRead / fileSize) * 100)) : 0;
+    const mu = process.memoryUsage();
+    const memoryUsage = { rss: mu.rss, heapTotal: mu.heapTotal, heapUsed: mu.heapUsed };
 
-      // coalesce/ debounce emits per uploadId: store latest payload and schedule a trailing emit
-      const payload = {
-        uploadId,
-        stage: 'upload',
-        progress,
-        fileSize,
-        totalRows,
-        rowsProcessed: totalRows,
-        rowsFailed: failedRows,
-        rowsPerSecond: Math.round(totalRows / elapsedSeconds),
-        durationMs: Math.round(elapsedSeconds * 1000),
-        memoryUsage,
-        batchSize: BATCH_SIZE
-      };
+    // coalesce/ debounce emits per uploadId: store latest payload and schedule a trailing emit
+    const payload = {
+      uploadId,
+      stage: 'upload',
+      progress,
+      fileSize,
+      totalRows,
+      rowsProcessed: totalRows,
+      rowsFailed: failedRows,
+      rowsPerSecond: Math.round(totalRows / elapsedSeconds),
+      durationMs: Math.round(elapsedSeconds * 1000),
+      memoryUsage,
+      batchSize: BATCH_SIZE
+    };
 
-      // store latest payload
-      pendingEmitPayloads.set(uploadId, payload);
+    // store latest payload
+    pendingEmitPayloads.set(uploadId, payload);
 
-      if (force) {
-        // flush immediately
+    if (force) {
+      // flush immediately
+      const p = pendingEmitPayloads.get(uploadId);
+      if (p) io.to(uploadId).emit('import-progress', p);
+      pendingEmitPayloads.delete(uploadId);
+      const t = pendingEmitTimers.get(uploadId);
+      if (t) { clearTimeout(t); pendingEmitTimers.delete(uploadId); }
+      lastEmit = Date.now();
+      return;
+    }
+
+    // schedule trailing emit if not already scheduled
+    if (!pendingEmitTimers.has(uploadId)) {
+      const timer = setTimeout(() => {
         const p = pendingEmitPayloads.get(uploadId);
         if (p) io.to(uploadId).emit('import-progress', p);
         pendingEmitPayloads.delete(uploadId);
-        const t = pendingEmitTimers.get(uploadId);
-        if (t) { clearTimeout(t); pendingEmitTimers.delete(uploadId); }
+        pendingEmitTimers.delete(uploadId);
         lastEmit = Date.now();
-        return;
-      }
-
-      // schedule trailing emit if not already scheduled
-      if (!pendingEmitTimers.has(uploadId)) {
-        const timer = setTimeout(() => {
-          const p = pendingEmitPayloads.get(uploadId);
-          if (p) io.to(uploadId).emit('import-progress', p);
-          pendingEmitPayloads.delete(uploadId);
-          pendingEmitTimers.delete(uploadId);
-          lastEmit = Date.now();
-        }, PROGRESS_THROTTLE_MS);
-        pendingEmitTimers.set(uploadId, timer);
-      }
+      }, PROGRESS_THROTTLE_MS);
+      pendingEmitTimers.set(uploadId, timer);
+    }
     try {
       const mu = process.memoryUsage();
       // schedule a buffered memory sample write to avoid many small DB writes
@@ -317,44 +340,44 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthedRequest, 
     }
   };
 
-// In-memory buffering for memory samples per upload to reduce DB write churn
-const memorySampleBuffers = new Map<string, any[]>();
-const memorySampleTimers = new Map<string, NodeJS.Timeout>();
+  // In-memory buffering for memory samples per upload to reduce DB write churn
+  const memorySampleBuffers = new Map<string, any[]>();
+  const memorySampleTimers = new Map<string, NodeJS.Timeout>();
 
-async function flushMemorySamples(uploadId: string) {
-  const buf = memorySampleBuffers.get(uploadId) ?? [];
-  if (!buf.length) {
+  async function flushMemorySamples(uploadId: string) {
+    const buf = memorySampleBuffers.get(uploadId) ?? [];
+    if (!buf.length) {
+      const t = memorySampleTimers.get(uploadId);
+      if (t) clearTimeout(t);
+      memorySampleTimers.delete(uploadId);
+      return;
+    }
+    memorySampleBuffers.set(uploadId, []);
     const t = memorySampleTimers.get(uploadId);
-    if (t) clearTimeout(t);
-    memorySampleTimers.delete(uploadId);
-    return;
+    if (t) {
+      clearTimeout(t);
+      memorySampleTimers.delete(uploadId);
+    }
+    try {
+      await MemorySample.insertMany(buf, { ordered: false });
+    } catch (e) {
+      // swallow errors; sampling is best-effort
+    }
   }
-  memorySampleBuffers.set(uploadId, []);
-  const t = memorySampleTimers.get(uploadId);
-  if (t) {
-    clearTimeout(t);
-    memorySampleTimers.delete(uploadId);
-  }
-  try {
-    await MemorySample.insertMany(buf, { ordered: false });
-  } catch (e) {
-    // swallow errors; sampling is best-effort
-  }
-}
 
-function scheduleMemorySample(uploadId: string, sample: any) {
-  const buf = memorySampleBuffers.get(uploadId) ?? [];
-  buf.push(sample);
-  memorySampleBuffers.set(uploadId, buf);
-  if (buf.length >= 10) {
-    void flushMemorySamples(uploadId);
-    return;
+  function scheduleMemorySample(uploadId: string, sample: any) {
+    const buf = memorySampleBuffers.get(uploadId) ?? [];
+    buf.push(sample);
+    memorySampleBuffers.set(uploadId, buf);
+    if (buf.length >= 10) {
+      void flushMemorySamples(uploadId);
+      return;
+    }
+    if (!memorySampleTimers.has(uploadId)) {
+      const timer = setTimeout(() => flushMemorySamples(uploadId), 1000);
+      memorySampleTimers.set(uploadId, timer);
+    }
   }
-  if (!memorySampleTimers.has(uploadId)) {
-    const timer = setTimeout(() => flushMemorySamples(uploadId), 1000);
-    memorySampleTimers.set(uploadId, timer);
-  }
-}
 
   try {
     let source: NodeJS.ReadableStream;
@@ -401,16 +424,16 @@ function scheduleMemorySample(uploadId: string, sample: any) {
         // This is not ideal for streaming but handles the case safely
         const byteCounter = new ByteCounterStream((bytesRead) => emitProgress(bytesRead));
         const readStream = createReadStream(filePath);
-        
+
         // First, count bytes
         readStream.pipe(byteCounter);
-        
+
         // Read the full object and emit as a single item
         const chunks: Buffer[] = [];
         for await (const chunk of readStream) {
           chunks.push(chunk as Buffer);
         }
-        
+
         const data = Buffer.concat(chunks).toString('utf8');
         let parsed: any;
         try {
@@ -418,7 +441,7 @@ function scheduleMemorySample(uploadId: string, sample: any) {
         } catch (err) {
           throw new Error(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
         }
-        
+
         // Treat top-level object as single record
         emitProgress(fileSize, true);
         source = Readable.from([parsed]);
@@ -429,12 +452,12 @@ function scheduleMemorySample(uploadId: string, sample: any) {
         const byteCounter = new ByteCounterStream((bytesRead) => emitProgress(bytesRead));
         const readStream = createReadStream(filePath);
         readStream.pipe(byteCounter);
-        
+
         const chunks: Buffer[] = [];
         for await (const chunk of readStream) {
           chunks.push(chunk as Buffer);
         }
-        
+
         const data = Buffer.concat(chunks).toString('utf8');
         let parsed: any;
         try {
@@ -442,7 +465,7 @@ function scheduleMemorySample(uploadId: string, sample: any) {
         } catch (err) {
           throw new Error(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
         }
-        
+
         const rows = Array.isArray(parsed) ? parsed : [parsed];
         emitProgress(fileSize, true);
         source = Readable.from(rows);
@@ -493,6 +516,17 @@ function scheduleMemorySample(uploadId: string, sample: any) {
       // ignore
     }
 
+    // Generate and persist dataset profile immediately so it is available without extra roundtrips
+    let profile: any = null;
+    try {
+      profile = await generateDatasetProfile(uploadId, owner, true);
+    } catch (profErr) {
+      console.error('Error generating profile during upload completion:', profErr);
+    }
+
+    const stages = job.stages ?? {};
+    stages.validation = { status: 'completed', finishedAt: new Date() };
+
     await ImportJob.findByIdAndUpdate(job._id, {
       status: 'completed',
       totalRows,
@@ -500,6 +534,8 @@ function scheduleMemorySample(uploadId: string, sample: any) {
       fileSize,
       columns,
       selectedColumns: columns,
+      profile,
+      stages,
       finishedAt: new Date()
     });
 
@@ -521,13 +557,44 @@ function scheduleMemorySample(uploadId: string, sample: any) {
       // non-blocking
     }
 
-    res.json({ message: 'File processed', fileName, total: totalRows, totalRows, failedRows, preview: firstRecords, columns, uploadId });
+    res.json({ message: 'File processed', fileName, total: totalRows, totalRows, failedRows, preview: firstRecords, columns, uploadId, profile });
   } catch (error) {
     await ImportJob.findByIdAndUpdate(job._id, { status: 'failed', totalRows, failedRows, finishedAt: new Date() });
     if (io) io.to(uploadId).emit('import-progress', { uploadId, progress: 100, rowsProcessed: totalRows, rowsFailed: failedRows, error: String(error) });
     res.status(500).json({ message: 'Upload processing failed', error: String(error) });
   } finally {
     unlink(filePath, () => undefined);
+  }
+});
+
+router.get('/preview', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const { uploadId, limit = '1000', skip = '0' } = req.query;
+    if (typeof uploadId !== 'string' || !uploadId.trim()) {
+      return res.status(400).json({ message: 'uploadId is required' });
+    }
+
+    const parsedLimit = Math.min(Number(limit), 1000);
+    const parsedSkip = Math.max(Number(skip), 0);
+
+    const ownerFilter = req.user?.email || req.user?.id ? { createdBy: { $in: [req.user.email, req.user.id].filter(Boolean) } } : {};
+    
+    // Validate job access
+    const job = await ImportJob.findOne({ uploadId, ...ownerFilter }).lean();
+    if (!job) {
+      return res.status(404).json({ message: 'Dataset not found or access denied' });
+    }
+
+    // Query UploadRow for preview records
+    const rows = await UploadRow.find({ uploadId })
+      .sort({ rowNumber: 1 })
+      .skip(parsedSkip)
+      .limit(parsedLimit)
+      .lean();
+
+    res.json({ rows: rows.map(r => r.data), total: job.totalRows });
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to fetch preview records', error: String(error) });
   }
 });
 

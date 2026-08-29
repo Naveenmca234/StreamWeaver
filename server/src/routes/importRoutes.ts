@@ -26,8 +26,10 @@ const normalizeMapping = (raw: unknown): Record<string, MappingEntry> => {
 
   if (Array.isArray(raw)) {
     return raw.reduce<Record<string, MappingEntry>>((acc, item) => {
-      if (item && typeof item === 'object' && 'source' in item && typeof item.source === 'string' && typeof item.dest === 'string' && item.dest.trim()) {
-        acc[item.dest] = { source: item.source, transformCode: typeof item.transformCode === 'string' ? item.transformCode : undefined };
+      if (item && typeof item === 'object' && 'source' in item && typeof item.source === 'string' && typeof (item as any).dest === 'string' && (item as any).dest.trim()) {
+        acc[(item as any).dest] = { source: item.source, transformCode: typeof (item as any).transformCode === 'string' ? (item as any).transformCode : undefined };
+      } else if (item && typeof item === 'object' && 'source' in item && typeof item.source === 'string' && typeof (item as any).target === 'string' && (item as any).target.trim()) {
+        acc[(item as any).target] = { source: item.source, transformCode: typeof (item as any).transformCode === 'string' ? (item as any).transformCode : undefined };
       }
       return acc;
     }, {});
@@ -48,7 +50,7 @@ const normalizeMapping = (raw: unknown): Record<string, MappingEntry> => {
 
 router.get('/', async (req: AuthedRequest, res: Response) => {
   try {
-    const jobs = await ImportJob.find(createJobFilter(req.user?.email, req.user?.id)).sort({ createdAt: -1 }).limit(50).lean();
+    const jobs = await ImportJob.find(createJobFilter(req.user?.email, req.user?.id)).sort({ updatedAt: -1, createdAt: -1 }).limit(50).lean();
     res.json({ jobs });
   } catch (error) {
     res.status(500).json({ message: 'Could not load import history', error: String(error) });
@@ -57,7 +59,7 @@ router.get('/', async (req: AuthedRequest, res: Response) => {
 
 router.get('/latest', async (req: AuthedRequest, res: Response) => {
   try {
-    const job = await ImportJob.findOne(createJobFilter(req.user?.email, req.user?.id)).sort({ createdAt: -1 }).lean();
+    const job = await ImportJob.findOne(createJobFilter(req.user?.email, req.user?.id)).sort({ updatedAt: -1, createdAt: -1 }).lean();
     if (!job) return res.status(404).json({ message: 'No imports found' });
     res.json({ job });
   } catch (error) {
@@ -73,6 +75,17 @@ router.get('/:uploadId', async (req: AuthedRequest, res: Response) => {
     res.json({ job });
   } catch (error) {
     res.status(500).json({ message: 'Could not load import', error: String(error) });
+  }
+});
+
+router.get('/:uploadId/mapping', async (req: AuthedRequest, res: Response) => {
+  try {
+    const { uploadId } = req.params;
+    const job = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email, req.user?.id) }).lean();
+    if (!job) return res.status(404).json({ message: 'Import not found' });
+    res.json({ mapping: job.mapping ?? {}, job });
+  } catch (error) {
+    res.status(500).json({ message: 'Could not load mapping', error: String(error) });
   }
 });
 
@@ -99,7 +112,7 @@ router.get('/:uploadId/audit', async (req: AuthedRequest, res: Response) => {
   }
 });
 
-router.patch('/:uploadId/mapping', async (req: AuthedRequest, res: Response) => {
+const handleSaveMapping = async (req: AuthedRequest, res: Response) => {
   try {
     const { uploadId } = req.params;
     const { mapping } = req.body;
@@ -109,19 +122,26 @@ router.patch('/:uploadId/mapping', async (req: AuthedRequest, res: Response) => 
     }
 
     const normalizedMapping = normalizeMapping(mapping);
+    const jobRecord = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email, req.user?.id) });
+    if (!jobRecord) return res.status(404).json({ message: 'Import not found' });
+
+    const stages = jobRecord.stages ?? {};
+    stages.mapping = { status: 'completed', finishedAt: new Date() };
 
     const job = await ImportJob.findOneAndUpdate(
       { uploadId, ...createJobFilter(req.user?.email, req.user?.id) },
-      { mapping: normalizedMapping, updatedAt: new Date() },
+      { mapping: normalizedMapping, stages, updatedAt: new Date() },
       { new: true }
     ).lean();
 
-    if (!job) return res.status(404).json({ message: 'Import not found' });
-    res.json({ job });
+    res.json({ job, mapping: normalizedMapping, message: 'Mapping saved successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Could not update mapping', error: String(error) });
   }
-});
+};
+
+router.post('/:uploadId/mapping', handleSaveMapping);
+router.patch('/:uploadId/mapping', handleSaveMapping);
 
 router.patch('/:uploadId/columns', async (req: AuthedRequest, res: Response) => {
   try {
@@ -145,10 +165,6 @@ router.patch('/:uploadId/columns', async (req: AuthedRequest, res: Response) => 
   }
 });
 
-// Runs one row through the saved mapping. If a destination field has a
-// `transformCode` attached, the user's JavaScript is executed in the
-// sandbox (see services/sandboxService.ts) with `value` bound to the
-// mapped source value and `row` bound to the whole source row.
 const applyMapping = async (row: Record<string, unknown>, mapping: Record<string, MappingEntry>) => {
   const output: Record<string, unknown> = {};
   const errors: string[] = [];
@@ -175,8 +191,8 @@ const applyMapping = async (row: Record<string, unknown>, mapping: Record<string
 };
 
 router.post('/:uploadId/transform', async (req: AuthedRequest, res: Response) => {
+  const { uploadId } = req.params;
   try {
-    const { uploadId } = req.params;
     const job = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email) }).lean();
     if (!job) return res.status(404).json({ message: 'Import not found' });
     if (!job.mapping || !Object.keys(job.mapping).length) {
@@ -202,7 +218,7 @@ router.post('/:uploadId/transform', async (req: AuthedRequest, res: Response) =>
       }
       batchOps.push({ insertOne: { document: { uploadId, rowNumber: row.rowNumber, transformedData: output } } });
       transformedRows += 1;
-      failedRows += errors.length;
+      if (errors.length) failedRows += 1;
 
       if (batchOps.length >= TRANSFORM_BATCH_SIZE) {
         await TransformedRow.bulkWrite(batchOps, { ordered: false });
@@ -229,7 +245,27 @@ router.post('/:uploadId/transform', async (req: AuthedRequest, res: Response) =>
       await TransformedRow.bulkWrite(batchOps, { ordered: false });
     }
 
-    await ImportJob.findOneAndUpdate({ uploadId, ...createJobFilter(req.user?.email, req.user?.id) }, { transformedAt: new Date() });
+    const stages = job.stages ?? {};
+    stages.transformation = {
+      status: failedRows > 0 && failedRows === totalRows ? 'failed' : 'completed',
+      finishedAt: new Date(),
+      count: transformedRows,
+      error: sandboxErrors[0]
+    };
+
+    const overallStatus = failedRows > 0 && failedRows === totalRows ? 'failed' : 'completed';
+
+    await ImportJob.findOneAndUpdate(
+      { uploadId, ...createJobFilter(req.user?.email, req.user?.id) },
+      {
+        transformedAt: new Date(),
+        failedRows,
+        stages,
+        status: overallStatus,
+        errorMessage: sandboxErrors[0] || undefined,
+        updatedAt: new Date()
+      }
+    );
 
     if (io) {
       const elapsedSeconds = Math.max((Date.now() - start) / 1000, 0.001);
@@ -249,12 +285,23 @@ router.post('/:uploadId/transform', async (req: AuthedRequest, res: Response) =>
     res.json({
       message: 'Transformation complete',
       transformedCount: transformedRows,
+      failedRows,
       sandboxErrors: sandboxErrors.slice(0, 20)
     });
   } catch (error) {
+    await ImportJob.findOneAndUpdate(
+      { uploadId, ...createJobFilter(req.user?.email, req.user?.id) },
+      {
+        status: 'failed',
+        errorMessage: String(error),
+        'stages.transformation': { status: 'failed', error: String(error) },
+        updatedAt: new Date()
+      }
+    );
     res.status(500).json({ message: 'Could not transform rows', error: String(error) });
   }
 });
+
 router.post('/:uploadId/import', async (req: AuthedRequest, res: Response) => {
   try {
     const { uploadId } = req.params;
@@ -303,9 +350,12 @@ router.post('/:uploadId/import', async (req: AuthedRequest, res: Response) => {
       await ImportedRow.bulkWrite(batchOps, { ordered: false });
     }
 
+    const stages = job.stages ?? {};
+    stages.ingestion = { status: 'completed', finishedAt: new Date() };
+
     await ImportJob.findOneAndUpdate(
       { uploadId, ...createJobFilter(req.user?.email, req.user?.id) },
-      { importedAt: new Date(), importedRows, updatedAt: new Date() }
+      { importedAt: new Date(), importedRows, stages, status: 'completed', updatedAt: new Date() }
     );
 
     if (io) {
@@ -329,7 +379,7 @@ router.post('/:uploadId/import', async (req: AuthedRequest, res: Response) => {
   }
 });
 
-// Delete an entire import dataset and related records (UploadRows, TransformedRow, ImportedRow, ValidationRecord, MemorySample)
+// Delete an entire import dataset and related records
 router.delete('/:uploadId', async (req: AuthedRequest, res: Response) => {
   try {
     const { uploadId } = req.params;
@@ -337,7 +387,6 @@ router.delete('/:uploadId', async (req: AuthedRequest, res: Response) => {
     const ownerFilter = { uploadId, ...createJobFilter(req.user?.email, req.user?.id) };
     let job = await ImportJob.findOne(ownerFilter).lean();
 
-    // If not found and caller requested force and is admin, try locating without owner filter
     if (!job && force && req.user?.role === 'admin') {
       job = await ImportJob.findOne({ uploadId }).lean();
       if (!job) return res.status(404).json({ message: 'Import not found' });
@@ -345,48 +394,41 @@ router.delete('/:uploadId', async (req: AuthedRequest, res: Response) => {
 
     if (!job) return res.status(404).json({ message: 'Import not found' });
 
-    // attempt deletions individually to gather detailed failures and ensure owner filter on ImportJob
     const errors: string[] = [];
     try {
       await UploadRow.deleteMany({ uploadId });
     } catch (e: any) {
       errors.push(`UploadRow: ${e?.message ?? String(e)}`);
-      console.error('Failed deleting UploadRow for', uploadId, e);
     }
 
     try {
       await TransformedRow.deleteMany({ uploadId });
     } catch (e: any) {
       errors.push(`TransformedRow: ${e?.message ?? String(e)}`);
-      console.error('Failed deleting TransformedRow for', uploadId, e);
     }
 
     try {
       await ImportedRow.deleteMany({ uploadId });
     } catch (e: any) {
       errors.push(`ImportedRow: ${e?.message ?? String(e)}`);
-      console.error('Failed deleting ImportedRow for', uploadId, e);
     }
 
     try {
       await ValidationRecord.deleteMany({ uploadId });
     } catch (e: any) {
       errors.push(`ValidationRecord: ${e?.message ?? String(e)}`);
-      console.error('Failed deleting ValidationRecord for', uploadId, e);
     }
 
     try {
       await MemorySample.deleteMany({ uploadId });
     } catch (e: any) {
       errors.push(`MemorySample: ${e?.message ?? String(e)}`);
-      console.error('Failed deleting MemorySample for', uploadId, e);
     }
 
     try {
       await ImportJob.deleteOne({ uploadId });
     } catch (e: any) {
       errors.push(`ImportJob: ${e?.message ?? String(e)}`);
-      console.error('Failed deleting ImportJob for', uploadId, e);
     }
 
     if (errors.length) {
@@ -398,4 +440,5 @@ router.delete('/:uploadId', async (req: AuthedRequest, res: Response) => {
     res.status(500).json({ message: 'Could not delete import', error: String(error) });
   }
 });
+
 export default router;
