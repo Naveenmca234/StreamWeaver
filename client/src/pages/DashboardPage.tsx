@@ -29,9 +29,7 @@ const DashboardPage = () => {
   const successRows = Math.max(0, totalRows - failedRows);
   const qualityScore = (hasPersistedRows && profile?.qualityScore != null)
     ? profile.qualityScore
-    : (hasPersistedRows && totalRows > 0)
-      ? Math.round((successRows / totalRows) * 100)
-      : null;
+    : null;
 
   // Stage statuses
   const ingestionStatus = activeJob?.stages?.ingestion?.status || (activeJob?.status === 'completed' ? 'completed' : activeJob?.status === 'processing' ? 'processing' : 'pending');

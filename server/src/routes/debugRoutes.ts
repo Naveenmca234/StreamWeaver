@@ -5,23 +5,31 @@ import mongoose from 'mongoose';
 
 const router = Router();
 
-// Public endpoint to inspect DB and collection sizes (no auth) — useful for admin checks.
 router.get('/db-stats-public', async (_req, res: Response) => {
   try {
     const db = mongoose.connection.db;
     if (!db) return res.status(500).json({ message: 'MongoDB connection not available' });
     const dbStats = await db.stats();
     const cols = await db.listCollections().toArray();
-    const collections: any[] = [];
+    
+    const collections: Record<string, number> = {};
     for (const c of cols) {
-      try {
-        const stats = await (db.collection(c.name) as any).stats();
-        collections.push({ name: c.name, count: stats.count, size: stats.size, storageSize: stats.storageSize, totalIndexSize: stats.totalIndexSize });
-      } catch (err) {
-        collections.push({ name: c.name, error: String(err) });
-      }
+      collections[c.name] = await db.collection(c.name).countDocuments();
     }
-    res.json({ dbStats, collections });
+
+    const jobs = await db.collection('importjobs').find({}, {
+      projection: { uploadId: 1, fileName: 1, createdBy: 1, totalRows: 1, status: 1, createdAt: 1 }
+    }).toArray();
+
+    const users = await db.collection('users').find({}, {
+      projection: { email: 1, name: 1, role: 1, createdAt: 1 }
+    }).toArray();
+
+    const uploadRowOwners = await db.collection('uploadrows').distinct('createdBy');
+    const transformedRowOwners = await db.collection('transformedrows').distinct('createdBy');
+    const importedRowOwners = await db.collection('importedrows').distinct('createdBy');
+
+    res.json({ dbStats, collections, jobs, users, uploadRowOwners, transformedRowOwners, importedRowOwners });
   } catch (error) {
     res.status(500).json({ message: 'Could not load DB stats', error: String(error) });
   }

@@ -4,15 +4,19 @@ export interface IImportedRow extends Document {
   uploadId: string;
   rowNumber: number;
   data: Record<string, unknown>;
+  createdBy?: string;
 }
 
 const importedRowSchema = new Schema<IImportedRow>(
   {
     uploadId: { type: String, required: true, index: true },
     rowNumber: { type: Number, required: true },
-    data: { type: Schema.Types.Mixed, required: true }
+    data: { type: Schema.Types.Mixed, required: true },
+    createdBy: { type: String, required: false, index: true }
   },
   { timestamps: true }
 );
+
+importedRowSchema.index({ uploadId: 1, rowNumber: 1 }, { unique: true });
 
 export default mongoose.model<IImportedRow>('ImportedRow', importedRowSchema);

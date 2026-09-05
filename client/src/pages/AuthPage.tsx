@@ -4,45 +4,52 @@ import { useNavigate } from 'react-router-dom';
 import { Sparkles, ShieldCheck, Database, Layers, ArrowRight, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
-const allowedDomains = ['gmail.com', 'kongu.edu'];
-
 const isEmailValid = (value: string) => {
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return false;
-  const parts = value.split('@');
-  if (parts.length !== 2) return false;
-  const domain = parts[1].toLowerCase();
-  return allowedDomains.some((d) => domain === d || domain.endsWith('.' + d));
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 };
 
 const AuthPage = () => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const { login, register } = useAuth();
   const navigate = useNavigate();
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!isEmailValid(email) || password.length < 6) {
+    setSuccess('');
+    const trimmedEmail = email.trim();
+    const trimmedName = name.trim();
+
+    if (!isEmailValid(trimmedEmail) || password.length < 6) {
       setError('Please enter a valid email and password (minimum 6 characters).');
       return;
     }
 
-    if (mode === 'register' && name.trim().length === 0) {
+    if (mode === 'register' && trimmedName.length === 0) {
       setError('Please enter your full name.');
       return;
     }
 
     try {
       if (mode === 'login') {
-        await login(email, password);
+        await login(trimmedEmail, password);
+        navigate('/dashboard');
+      } else if (mode === 'register') {
+        await register(trimmedName, trimmedEmail, password);
+        navigate('/dashboard');
       } else {
-        await register(name, email, password);
+        const res = await axios.post('/api/auth/reset-password', {
+          email: trimmedEmail,
+          newPassword: password
+        });
+        setSuccess(res.data?.message || 'Password updated successfully! You can now sign in.');
+        setMode('login');
       }
-      navigate('/dashboard');
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.data?.message) {
         setError(String(err.response.data.message));
@@ -105,7 +112,7 @@ const AuthPage = () => {
                   ? 'bg-theme-surface text-theme-primary shadow-xs'
                   : 'text-theme-text-muted hover:text-theme-text-primary'
               }`}
-              onClick={() => setMode('login')}
+              onClick={() => { setMode('login'); setError(''); setSuccess(''); }}
             >
               Sign In
             </button>
@@ -116,11 +123,29 @@ const AuthPage = () => {
                   ? 'bg-theme-surface text-theme-primary shadow-xs'
                   : 'text-theme-text-muted hover:text-theme-text-primary'
               }`}
-              onClick={() => setMode('register')}
+              onClick={() => { setMode('register'); setError(''); setSuccess(''); }}
             >
               Create Account
             </button>
+            <button
+              type="button"
+              className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                mode === 'reset'
+                  ? 'bg-theme-surface text-theme-primary shadow-xs'
+                  : 'text-theme-text-muted hover:text-theme-text-primary'
+              }`}
+              onClick={() => { setMode('reset'); setError(''); setSuccess(''); }}
+            >
+              Reset Password
+            </button>
           </div>
+
+          {success && (
+            <div className="mb-5 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2">
+              <ShieldCheck size={15} className="flex-shrink-0 text-emerald-600" />
+              <span>{success}</span>
+            </div>
+          )}
 
           {error && (
             <div className="mb-5 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2">
@@ -174,7 +199,7 @@ const AuthPage = () => {
               type="submit"
               className="btn-primary w-full py-2.5 rounded-xl text-xs sm:text-sm mt-2 flex items-center justify-center gap-1.5"
             >
-              <span>{mode === 'login' ? 'Sign In to Workspace' : 'Create Account'}</span>
+              <span>{mode === 'login' ? 'Sign In to Workspace' : mode === 'register' ? 'Create Account' : 'Update Password'}</span>
               <ArrowRight size={15} />
             </button>
           </form>

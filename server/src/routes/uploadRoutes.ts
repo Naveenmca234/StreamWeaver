@@ -14,7 +14,7 @@ import UploadRow from '../models/UploadRow';
 import MemorySample from '../models/MemorySample';
 import ImportJob from '../models/ImportJob';
 import ValidationRecord from '../models/ValidationRecord';
-import { requireAuth, AuthedRequest } from '../middleware/authMiddleware';
+import { requireAuth, AuthedRequest, createOwnerFilter } from '../middleware/authMiddleware';
 import { BatchTransformStream, RowNumberingStream, ByteCounterStream } from '../streams/batchTransformStream';
 import { generateDatasetProfile } from './profilingRoutes';
 
@@ -114,27 +114,59 @@ const validateRow = (row: Record<string, unknown>, uploadId: string, rowNumber: 
   const keys = row && typeof row === 'object' ? Object.keys(row) : [];
 
   if (!keys.length) {
-    records.push({ uploadId, rowNumber, field: 'row', message: 'Row contains no fields', severity: 'error', data: row });
+    records.push({
+      uploadId,
+      rowNumber,
+      fieldName: 'row',
+      field: 'row',
+      ruleName: 'EmptyRow',
+      message: 'Row contains no fields or data',
+      severity: 'error',
+      data: row
+    });
     return records;
   }
 
   for (const key of keys) {
     const value = row[key];
     if (value === '' || value === null || value === undefined) {
-      records.push({ uploadId, rowNumber, field: key, message: `Field ${key} is empty`, severity: 'warning', data: row });
+      records.push({
+        uploadId,
+        rowNumber,
+        fieldName: key,
+        field: key,
+        ruleName: 'RequiredField',
+        message: `Field "${key}" is empty or missing`,
+        severity: 'warning',
+        data: row
+      });
     }
   }
 
-  if (typeof row.email === 'string' && !row.email.includes('@')) {
-    records.push({ uploadId, rowNumber, field: 'email', message: 'Email value does not appear valid', severity: 'warning', data: row });
+  if (typeof row.email === 'string' && row.email.trim().length > 0 && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email.trim())) {
+    records.push({
+      uploadId,
+      rowNumber,
+      fieldName: 'email',
+      field: 'email',
+      ruleName: 'EmailFormat',
+      message: `Email "${row.email}" is not a valid format`,
+      severity: 'warning',
+      data: row
+    });
   }
 
   if ((row.created_at || row.createdAt) && Number.isNaN(Date.parse(String(row.created_at ?? row.createdAt)))) {
-    records.push({ uploadId, rowNumber, field: 'created_at', message: 'Date field is invalid', severity: 'warning', data: row });
-  }
-
-  if (('name' in row || 'fullName' in row || 'firstName' in row) && !row.name && !row.fullName && !row.firstName) {
-    records.push({ uploadId, rowNumber, field: 'name', message: 'Name field is missing', severity: 'warning', data: row });
+    records.push({
+      uploadId,
+      rowNumber,
+      fieldName: row.created_at ? 'created_at' : 'createdAt',
+      field: row.created_at ? 'created_at' : 'createdAt',
+      ruleName: 'DateFormat',
+      message: 'Date field contains an unparseable date format',
+      severity: 'warning',
+      data: row
+    });
   }
 
   return records;
@@ -525,7 +557,11 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthedRequest, 
     }
 
     const stages = job.stages ?? {};
-    stages.validation = { status: 'completed', finishedAt: new Date() };
+    stages.ingestion = { status: 'completed', finishedAt: new Date() };
+    stages.cleaning = { status: 'pending' };
+    stages.mapping = { status: 'pending' };
+    stages.transformation = { status: 'pending' };
+    stages.validation = { status: 'pending' };
 
     await ImportJob.findByIdAndUpdate(job._id, {
       status: 'completed',
@@ -577,7 +613,7 @@ router.get('/preview', requireAuth, async (req: AuthedRequest, res: Response) =>
     const parsedLimit = Math.min(Number(limit), 1000);
     const parsedSkip = Math.max(Number(skip), 0);
 
-    const ownerFilter = req.user?.email || req.user?.id ? { createdBy: { $in: [req.user.email, req.user.id].filter(Boolean) } } : {};
+    const ownerFilter = createOwnerFilter(req.user?.email, req.user?.id);
     
     // Validate job access
     const job = await ImportJob.findOne({ uploadId, ...ownerFilter }).lean();

@@ -130,7 +130,7 @@ const ValidationPage = () => {
             </p>
           </div>
 
-          {/* Dataset Selector Dropdown */}
+          {/* Dataset Selector Dropdown & Action */}
           <div className="flex items-center gap-3">
             <select
               value={currentUploadId}
@@ -144,6 +144,16 @@ const ValidationPage = () => {
                 </option>
               ))}
             </select>
+            {currentUploadId && (
+              <button
+                type="button"
+                onClick={() => navigate(`/preview?uploadId=${currentUploadId}`)}
+                className="btn-primary text-xs py-2 px-3.5 rounded-xl flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <span>Preview & Export</span>
+                <ArrowRight size={14} />
+              </button>
+            )}
           </div>
         </div>
       </div>

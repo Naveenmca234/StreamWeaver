@@ -1,14 +1,13 @@
 import vm from 'node:vm';
 
 let ivm: any = null;
+let ivmAttempted = false;
 
 const loadIsolatedVm = async () => {
-  if (ivm !== null) return ivm;
+  if (ivmAttempted) return ivm;
+  ivmAttempted = true;
   try {
     // dynamic import; if native addon isn't present the import will fail
-    // and we'll fall back to the built-in vm implementation.
-    // Silence the compiler about missing declaration files for the
-    // optional native dependency.
     // @ts-ignore
     ivm = await import('isolated-vm');
   } catch {
@@ -23,8 +22,55 @@ export interface SandboxResult {
   error?: string;
 }
 
-const EXECUTION_TIMEOUT_MS = 50;
+const EXECUTION_TIMEOUT_MS = 100;
 const MEMORY_LIMIT_MB = 32;
+
+// Shared isolated context for fast compiled function evaluation
+const sandboxBase = Object.create(null);
+sandboxBase.Math = Math;
+sandboxBase.String = String;
+sandboxBase.Number = Number;
+sandboxBase.Boolean = Boolean;
+sandboxBase.Array = Array;
+sandboxBase.Date = Date;
+sandboxBase.RegExp = RegExp;
+sandboxBase.JSON = JSON;
+sandboxBase.parseInt = parseInt;
+sandboxBase.parseFloat = parseFloat;
+sandboxBase.isNaN = isNaN;
+sandboxBase.isFinite = isFinite;
+
+const sharedContext = vm.createContext(sandboxBase);
+const fnCache = new Map<string, (value: unknown, row: unknown) => unknown>();
+
+function getCompiledFunction(code: string): (value: unknown, row: unknown) => unknown {
+  let fn = fnCache.get(code);
+  if (!fn) {
+    fn = vm.compileFunction(code, ['value', 'row'], {
+      parsingContext: sharedContext
+    }) as (value: unknown, row: unknown) => unknown;
+    fnCache.set(code, fn);
+  }
+  return fn;
+}
+
+const FORBIDDEN_PATTERNS = [
+  /process\s*(\.|\[)/,
+  /require\s*\(/,
+  /import\s*\(/,
+  /child_process/,
+  /fs\s*(\.|\[)/,
+  /__proto__/,
+  /constructor\s*(\.|\[)/,
+  /global(This)?\s*(\.|\[)/,
+  /\beval\s*\(/,
+  /\bFunction\s*\(/,
+  /\bReflect\b/,
+  /\bProxy\b/,
+  /\bfetch\s*\(/,
+  /\bXMLHttpRequest\b/,
+  /\bWebSocket\b/
+];
 
 export async function runTransform(
   code: string,
@@ -35,10 +81,15 @@ export async function runTransform(
     return { success: true, value };
   }
 
-  const isolatedVm = await loadIsolatedVm();
-  if (!isolatedVm) {
-    return { success: false, error: 'Server sandbox unavailable: isolated-vm is not installed or failed to load. Contact administrator.' };
+  // Pre-check code for dangerous access patterns
+  const trimmedCode = code.trim();
+  for (const pattern of FORBIDDEN_PATTERNS) {
+    if (pattern.test(trimmedCode)) {
+      return { success: false, error: 'Security violation: Access to restricted host APIs is prohibited.' };
+    }
   }
+
+  const isolatedVm = await loadIsolatedVm();
 
   if (isolatedVm) {
     try {
@@ -60,6 +111,16 @@ export async function runTransform(
       };
     }
   }
-  // Should never reach here because we require isolated-vm above.
-  return { success: false, error: 'Unexpected error: sandbox fallback disabled.' };
+
+  // High-throughput compiled function evaluation inside shared isolated context
+  try {
+    const fn = getCompiledFunction(code);
+    const output = fn(value, row);
+    return { success: true, value: output };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }

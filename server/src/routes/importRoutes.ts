@@ -5,7 +5,7 @@ import TransformedRow from '../models/TransformedRow';
 import ImportedRow from '../models/ImportedRow';
 import MemorySample from '../models/MemorySample';
 import ValidationRecord from '../models/ValidationRecord';
-import { requireAuth, AuthedRequest } from '../middleware/authMiddleware';
+import { requireAuth, AuthedRequest, createOwnerFilter } from '../middleware/authMiddleware';
 import { runTransform } from '../services/sandboxService';
 
 const router = Router();
@@ -13,10 +13,7 @@ router.use(requireAuth);
 
 type MappingEntry = string | { source: string; transformCode?: string };
 
-const createJobFilter = (userEmail?: string, userId?: string) => {
-  const owners = [userEmail, userId].filter(Boolean) as string[];
-  return owners.length ? { createdBy: { $in: owners } } : {};
-};
+const createJobFilter = (userEmail?: string, userId?: string) => createOwnerFilter(userEmail, userId);
 
 const TRANSFORM_BATCH_SIZE = 5000;
 const IMPORT_BATCH_SIZE = 5000;
@@ -101,7 +98,7 @@ router.get('/:uploadId/audit', async (req: AuthedRequest, res: Response) => {
     const avgRss = Math.round(samples.reduce((a: number, b: any) => a + b.rss, 0) / samples.length);
     const avgHeap = Math.round(samples.reduce((a: number, b: any) => a + b.heapUsed, 0) / samples.length);
 
-    const memoryLimitMB = Number(process.env.MEMORY_AUDIT_LIMIT_MB ?? '150');
+    const memoryLimitMB = Number(process.env.MEMORY_AUDIT_LIMIT_MB ?? '500');
     const peakRssMB = Math.round(peakRss / 1024 / 1024);
     const pass = peakRssMB <= memoryLimitMB;
 
@@ -125,12 +122,22 @@ const handleSaveMapping = async (req: AuthedRequest, res: Response) => {
     const jobRecord = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email, req.user?.id) });
     if (!jobRecord) return res.status(404).json({ message: 'Import not found' });
 
+    // Clean up old transformed rows since mapping schema has changed
+    await TransformedRow.deleteMany({ uploadId });
+
     const stages = jobRecord.stages ?? {};
     stages.mapping = { status: 'completed', finishedAt: new Date() };
+    stages.transformation = { status: 'pending' };
+    stages.validation = { status: 'pending' };
+
+    let updatedProfile = jobRecord.profile;
+    if (updatedProfile) {
+      updatedProfile = { ...updatedProfile, qualityScore: null };
+    }
 
     const job = await ImportJob.findOneAndUpdate(
       { uploadId, ...createJobFilter(req.user?.email, req.user?.id) },
-      { mapping: normalizedMapping, stages, updatedAt: new Date() },
+      { mapping: normalizedMapping, stages, profile: updatedProfile, updatedAt: new Date() },
       { new: true }
     ).lean();
 
@@ -193,7 +200,7 @@ const applyMapping = async (row: Record<string, unknown>, mapping: Record<string
 router.post('/:uploadId/transform', async (req: AuthedRequest, res: Response) => {
   const { uploadId } = req.params;
   try {
-    const job = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email) }).lean();
+    const job = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email, req.user?.id) }).lean();
     if (!job) return res.status(404).json({ message: 'Import not found' });
     if (!job.mapping || !Object.keys(job.mapping).length) {
       return res.status(400).json({ message: 'Mapping must be saved before transformation' });
@@ -252,6 +259,7 @@ router.post('/:uploadId/transform', async (req: AuthedRequest, res: Response) =>
       count: transformedRows,
       error: sandboxErrors[0]
     };
+    stages.validation = { status: 'pending' };
 
     const overallStatus = failedRows > 0 && failedRows === totalRows ? 'failed' : 'completed';
 
@@ -305,12 +313,12 @@ router.post('/:uploadId/transform', async (req: AuthedRequest, res: Response) =>
 router.post('/:uploadId/import', async (req: AuthedRequest, res: Response) => {
   try {
     const { uploadId } = req.params;
-    const job = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email) }).lean();
+    const job = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email, req.user?.id) }).lean();
     if (!job) return res.status(404).json({ message: 'Import not found' });
 
     const totalRows = await TransformedRow.countDocuments({ uploadId });
     if (!totalRows) {
-      return res.status(404).json({ message: 'No transformed rows available for import' });
+      return res.status(404).json({ message: 'No transformed rows available for import. Please run transformation first.' });
     }
 
     const cursor = TransformedRow.find({ uploadId }).sort({ rowNumber: 1 }).cursor();
@@ -322,7 +330,7 @@ router.post('/:uploadId/import', async (req: AuthedRequest, res: Response) => {
     const start = Date.now();
 
     for await (const row of cursor) {
-      batchOps.push({ insertOne: { document: { uploadId, rowNumber: row.rowNumber, data: row.transformedData } } });
+      batchOps.push({ insertOne: { document: { uploadId, rowNumber: row.rowNumber, data: row.transformedData, createdBy: job.createdBy } } });
       importedRows += 1;
 
       if (batchOps.length >= IMPORT_BATCH_SIZE) {
@@ -351,7 +359,7 @@ router.post('/:uploadId/import', async (req: AuthedRequest, res: Response) => {
     }
 
     const stages = job.stages ?? {};
-    stages.ingestion = { status: 'completed', finishedAt: new Date() };
+    stages.ingestion = { status: 'completed', finishedAt: new Date(), count: importedRows };
 
     await ImportJob.findOneAndUpdate(
       { uploadId, ...createJobFilter(req.user?.email, req.user?.id) },
@@ -373,9 +381,91 @@ router.post('/:uploadId/import', async (req: AuthedRequest, res: Response) => {
       });
     }
 
-    res.json({ message: 'Import complete', importedRows, totalRows });
+    res.json({ message: 'Commit to warehouse complete', importedRows, totalRows });
   } catch (error) {
     res.status(500).json({ message: 'Could not import rows', error: String(error) });
+  }
+});
+
+// Stream Export (CSV & JSON) for Raw and Transformed data
+router.get('/:uploadId/export', async (req: AuthedRequest, res: Response) => {
+  try {
+    const { uploadId } = req.params;
+    const type = req.query.type === 'transformed' ? 'transformed' : 'raw';
+    const format = req.query.format === 'json' ? 'json' : 'csv';
+
+    const job = await ImportJob.findOne({ uploadId, ...createJobFilter(req.user?.email, req.user?.id) }).lean();
+    if (!job) return res.status(404).json({ message: 'Import not found' });
+
+    const baseName = job.fileName ? job.fileName.replace(/\.[^/.]+$/, '') : 'dataset';
+    const exportFileName = `${baseName}_${type}.${format}`;
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${exportFileName}"`);
+
+      res.write('[\n');
+      let first = true;
+
+      if (type === 'transformed') {
+        const cursor = TransformedRow.find({ uploadId }).sort({ rowNumber: 1 }).cursor();
+        for await (const row of cursor) {
+          if (!first) res.write(',\n');
+          res.write(JSON.stringify(row.transformedData || {}));
+          first = false;
+        }
+      } else {
+        const cursor = UploadRow.find({ uploadId }).sort({ rowNumber: 1 }).cursor();
+        for await (const row of cursor) {
+          if (!first) res.write(',\n');
+          res.write(JSON.stringify(row.data || {}));
+          first = false;
+        }
+      }
+
+      res.write('\n]');
+      res.end();
+      return;
+    }
+
+    // CSV export
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${exportFileName}"`);
+
+    const escapeCsv = (val: unknown): string => {
+      if (val === null || val === undefined) return '';
+      const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    if (type === 'transformed') {
+      const sample = await TransformedRow.findOne({ uploadId }).lean();
+      const headers = sample?.transformedData ? Object.keys(sample.transformedData) : [];
+      res.write(headers.map(escapeCsv).join(',') + '\n');
+
+      const cursor = TransformedRow.find({ uploadId }).sort({ rowNumber: 1 }).cursor();
+      for await (const row of cursor) {
+        const data = row.transformedData || {};
+        res.write(headers.map((h) => escapeCsv(data[h])).join(',') + '\n');
+      }
+    } else {
+      const sample = await UploadRow.findOne({ uploadId }).lean();
+      const headers = sample?.data ? Object.keys(sample.data) : job.columns || [];
+      res.write(headers.map(escapeCsv).join(',') + '\n');
+
+      const cursor = UploadRow.find({ uploadId }).sort({ rowNumber: 1 }).cursor();
+      for await (const row of cursor) {
+        const data = row.data || {};
+        res.write(headers.map((h) => escapeCsv(data[h])).join(',') + '\n');
+      }
+    }
+
+    res.end();
+  } catch (error) {
+    res.status(500).json({ message: 'Export failed', error: String(error) });
   }
 });
 

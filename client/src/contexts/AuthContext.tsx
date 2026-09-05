@@ -57,10 +57,28 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
 
     setLoading(false);
+
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error.response?.status === 401) {
+          localStorage.removeItem('streamweaver-token');
+          localStorage.removeItem('streamweaver-user');
+          delete axios.defaults.headers.common.Authorization;
+          setUser(null);
+        }
+        return Promise.reject(error);
+      }
+    );
+
+    return () => {
+      axios.interceptors.response.eject(interceptor);
+    };
   }, []);
 
   const login = async (email: string, password: string) => {
-    const response = await axios.post('/api/auth/login', { email, password });
+    const normalizedEmail = email.trim().toLowerCase();
+    const response = await axios.post('/api/auth/login', { email: normalizedEmail, password });
     const user = response.data.user;
     localStorage.setItem('streamweaver-token', response.data.token);
     localStorage.setItem('streamweaver-user', JSON.stringify(user));
@@ -69,7 +87,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const register = async (name: string, email: string, password: string) => {
-    const response = await axios.post('/api/auth/register', { name, email, password });
+    const normalizedEmail = email.trim().toLowerCase();
+    const trimmedName = name.trim();
+    const response = await axios.post('/api/auth/register', { name: trimmedName, email: normalizedEmail, password });
     const user = response.data.user;
     localStorage.setItem('streamweaver-token', response.data.token);
     localStorage.setItem('streamweaver-user', JSON.stringify(user));
@@ -80,6 +100,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const logout = () => {
     localStorage.removeItem('streamweaver-token');
     localStorage.removeItem('streamweaver-user');
+    localStorage.removeItem('streamweaver-active-dataset');
+    localStorage.removeItem('streamweaver-active-upload-id');
     delete axios.defaults.headers.common.Authorization;
     setUser(null);
   };

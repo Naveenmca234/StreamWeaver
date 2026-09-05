@@ -10,7 +10,9 @@ import {
   Search,
   Filter,
   Layers,
-  FileSpreadsheet
+  FileSpreadsheet,
+  RotateCw,
+  Server
 } from 'lucide-react';
 import api from '../services/api';
 import MemoryAudit from '../components/MemoryAudit';
@@ -19,14 +21,16 @@ import { useDataset } from '../contexts/DatasetContext';
 const PreviewPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { activeUploadId, activeJob, allJobs, datasets, selectDataset } = useDataset();
+  const { activeUploadId, activeJob, datasets, selectDataset, refreshActiveDataset } = useDataset();
 
   const queryUploadId = searchParams.get('uploadId') ?? '';
   const currentUploadId = queryUploadId || activeUploadId || '';
 
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [committing, setCommitting] = useState(false);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'raw' | 'transformed'>('raw');
 
@@ -92,6 +96,52 @@ const PreviewPage = () => {
     );
   }, [rows, searchQuery]);
 
+  const handleExport = async (format: 'csv' | 'json') => {
+    if (!currentUploadId) return;
+    try {
+      const token = localStorage.getItem('streamweaver-token');
+      const response = await fetch(`/api/imports/${currentUploadId}/export?type=${activeTab}&format=${format}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+
+      if (!response.ok) {
+        throw new Error('Export failed');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const baseName = activeJob?.fileName ? activeJob.fileName.replace(/\.[^/.]+$/, '') : 'dataset';
+      a.download = `${baseName}_${activeTab}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError('Failed to download export file.');
+    }
+  };
+
+  const handleCommitToWarehouse = async () => {
+    if (!currentUploadId) return;
+    setCommitting(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const resp = await api.post(`/imports/${currentUploadId}/import`);
+      setMessage(`Successfully committed ${resp.data.importedRows?.toLocaleString() ?? 'all'} rows to target warehouse!`);
+      await refreshActiveDataset();
+    } catch (err: any) {
+      setError(err?.response?.data?.message || 'Failed to commit rows to warehouse. Make sure transformation is run first.');
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const ingestionStatus = activeJob?.stages?.ingestion?.status;
+
   return (
     <div className="space-y-6">
       {/* Header Banner */}
@@ -100,13 +150,13 @@ const PreviewPage = () => {
           <div>
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-theme-surface-blue border border-theme-border-strong text-theme-primary text-xs font-semibold uppercase tracking-wider mb-2">
               <Sparkles size={13} />
-              <span>Data Virtualization</span>
+              <span>Data Virtualization & Export</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold text-theme-text-primary">
-              Preview Data
+              Preview & Export
             </h1>
             <p className="mt-1 text-sm text-theme-text-secondary">
-              Virtual table inspector for persisted dataset records with zero-buffer streaming.
+              Inspect raw and transformed records, download CSV/JSON exports, and commit to data warehouse.
             </p>
           </div>
 
@@ -127,10 +177,10 @@ const PreviewPage = () => {
             {currentUploadId && (
               <button
                 type="button"
-                onClick={() => navigate(`/validations?uploadId=${currentUploadId}`)}
+                onClick={() => navigate(`/history?uploadId=${currentUploadId}`)}
                 className="btn-primary text-xs py-2 px-3.5 rounded-xl whitespace-nowrap"
               >
-                <span>Validations</span>
+                <span>Import History</span>
                 <ArrowRight size={14} />
               </button>
             )}
@@ -140,6 +190,14 @@ const PreviewPage = () => {
 
       {/* Memory Audit Component */}
       {currentUploadId && <MemoryAudit uploadId={currentUploadId} />}
+
+      {/* Success Notification */}
+      {message && (
+        <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs sm:text-sm flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-emerald-600" />
+          <span>{message}</span>
+        </div>
+      )}
 
       {/* Error Alert */}
       {error && (
@@ -185,27 +243,66 @@ const PreviewPage = () => {
               </div>
             </div>
 
-            {/* Toggle Raw vs Transformed */}
-            <div className="flex items-center p-1 rounded-xl bg-theme-surface border border-theme-border text-xs">
+            {/* Actions: Export & Commit */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Toggle Raw vs Transformed */}
+              <div className="flex items-center p-1 rounded-xl bg-theme-surface border border-theme-border text-xs">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('raw')}
+                  className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                    activeTab === 'raw'
+                      ? 'bg-theme-surface-blue border border-theme-border-strong text-theme-primary font-bold'
+                      : 'text-theme-text-muted hover:text-theme-text-primary'
+                  }`}
+                >
+                  Raw Data
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('transformed')}
+                  className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                    activeTab === 'transformed'
+                      ? 'bg-theme-surface-blue border border-theme-border-strong text-theme-primary font-bold'
+                      : 'text-theme-text-muted hover:text-theme-text-primary'
+                  }`}
+                >
+                  Transformed Data
+                </button>
+              </div>
+
+              {/* Export Buttons */}
               <button
                 type="button"
-                onClick={() => setActiveTab('raw')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition ${activeTab === 'raw'
-                    ? 'bg-theme-surface-blue border border-theme-border-strong text-theme-primary font-bold'
-                    : 'text-theme-text-muted hover:text-theme-text-primary'
-                  }`}
+                onClick={() => void handleExport('csv')}
+                className="btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5"
+                title="Download CSV"
               >
-                Raw Ingestion
+                <Download size={13} />
+                <span>Export CSV</span>
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab('transformed')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition ${activeTab === 'transformed'
-                    ? 'bg-theme-surface-blue border border-theme-border-strong text-theme-primary font-bold'
-                    : 'text-theme-text-muted hover:text-theme-text-primary'
-                  }`}
+                onClick={() => void handleExport('json')}
+                className="btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5"
+                title="Download JSON"
               >
-                Transformed
+                <Download size={13} />
+                <span>Export JSON</span>
+              </button>
+
+              {/* Commit to Warehouse Action */}
+              <button
+                type="button"
+                onClick={handleCommitToWarehouse}
+                disabled={committing}
+                className={`btn-primary text-xs py-1.5 px-4 rounded-lg flex items-center gap-1.5 ${
+                  ingestionStatus === 'completed' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : ''
+                }`}
+                title="Commit transformed data into destination warehouse storage"
+              >
+                <Server size={13} />
+                <span>{committing ? 'Committing...' : ingestionStatus === 'completed' ? 'Re-Commit Warehouse' : 'Commit to Warehouse'}</span>
               </button>
             </div>
           </div>
@@ -213,7 +310,7 @@ const PreviewPage = () => {
           {/* Records Stats Header */}
           <div className="px-5 py-2.5 bg-theme-surface border-b border-theme-border flex items-center justify-between text-xs text-theme-text-muted">
             <span>
-              Showing <strong className="text-theme-text-primary">{filteredRows.length.toLocaleString()}</strong> of <strong className="text-theme-text-primary">{(activeJob?.totalRows ?? 0).toLocaleString()}</strong> records ({columns.length} {activeTab === 'transformed' ? 'transformed' : 'raw'} columns)
+              Showing <strong className="text-theme-text-primary">{filteredRows.length.toLocaleString()}</strong> of <strong className="text-theme-text-primary">{(activeJob?.totalRows ?? rows.length).toLocaleString()}</strong> records ({columns.length} {activeTab === 'transformed' ? 'transformed' : 'raw'} columns)
             </span>
             <span className="text-[11px] text-theme-primary font-semibold">
               Live RAM Snapshot
@@ -228,7 +325,9 @@ const PreviewPage = () => {
             </div>
           ) : filteredRows.length === 0 ? (
             <div className="p-10 text-center text-xs text-theme-text-muted">
-              No records match your filter criteria or dataset has no preview rows.
+              {activeTab === 'transformed'
+                ? 'No transformed records available yet. Please go to Mapping Studio and run transformation.'
+                : 'No records match your filter criteria or dataset has no preview rows.'}
             </div>
           ) : (
             <div className="overflow-x-auto max-h-[550px] overflow-y-auto">
@@ -260,8 +359,9 @@ const PreviewPage = () => {
                         return (
                           <td
                             key={col}
-                            className={`px-4 py-2.5 whitespace-nowrap border-r border-theme-border last:border-r-0 font-medium ${isNull ? 'text-rose-400 italic text-[11px]' : 'text-theme-text-primary'
-                              }`}
+                            className={`px-4 py-2.5 whitespace-nowrap border-r border-theme-border last:border-r-0 font-medium ${
+                              isNull ? 'text-rose-400 italic text-[11px]' : 'text-theme-text-primary'
+                            }`}
                           >
                             {isNull ? 'null' : String(val)}
                           </td>

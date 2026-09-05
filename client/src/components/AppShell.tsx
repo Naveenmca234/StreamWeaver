@@ -37,19 +37,14 @@ interface NavSection {
 
 const navSections: NavSection[] = [
   {
-    title: 'MAIN',
+    title: 'PIPELINE',
     items: [
       { label: 'Dashboard', path: '/dashboard', icon: Home },
       { label: 'Upload Dataset', path: '/upload', icon: Upload },
       { label: 'Clean Data', path: '/cleaning', icon: FileSearch },
-      { label: 'Preview Data', path: '/preview', icon: Database },
       { label: 'Mapping Studio', path: '/mapping', icon: Layers },
-    ]
-  },
-  {
-    title: 'QUALITY',
-    items: [
-      { label: 'Validations', path: '/validations', icon: FileSearch },
+      { label: 'Validations', path: '/validations', icon: CheckCircle2 },
+      { label: 'Preview & Export', path: '/preview', icon: Database },
       { label: 'Import History', path: '/history', icon: Database },
     ]
   },

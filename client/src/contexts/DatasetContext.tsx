@@ -69,72 +69,29 @@ export interface SelectableDataset {
   version?: number;
 }
 
-export const computeSelectableDatasets = (jobs: ImportJob[], activeId: string | null): SelectableDataset[] => {
+export const computeSelectableDatasets = (jobs: ImportJob[], _activeId: string | null): SelectableDataset[] => {
   if (!jobs.length) return [];
 
-  // Group jobs by fileName
-  const fileGroups: Record<string, ImportJob[]> = {};
-  jobs.forEach((job) => {
-    const key = job.fileName;
-    if (!fileGroups[key]) fileGroups[key] = [];
-    fileGroups[key].push(job);
+  return jobs.map((job, idx) => {
+    const timeStr = new Date(job.createdAt).toLocaleDateString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    const shortId = job.uploadId.slice(0, 8);
+    const rowsStr = (job.totalRows || 0).toLocaleString();
+    return {
+      uploadId: job.uploadId,
+      fileName: job.fileName,
+      totalRows: job.totalRows || 0,
+      status: job.status,
+      createdAt: job.createdAt,
+      label: `${job.fileName} (${rowsStr} rows • ${timeStr} • #${shortId})`,
+      isLatest: idx === 0,
+      version: jobs.length - idx
+    };
   });
-
-  const result: SelectableDataset[] = [];
-
-  Object.entries(fileGroups).forEach(([, groupJobs]) => {
-    // Sort chronologically ascending (oldest = v1, newest = vN)
-    const sorted = [...groupJobs].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
-    const latestJob = sorted[sorted.length - 1];
-
-    if (sorted.length === 1) {
-      result.push({
-        uploadId: latestJob.uploadId,
-        fileName: latestJob.fileName,
-        totalRows: latestJob.totalRows || 0,
-        status: latestJob.status,
-        createdAt: latestJob.createdAt,
-        label: `${latestJob.fileName} (${(latestJob.totalRows || 0).toLocaleString()} rows)`,
-        isLatest: true,
-        version: 1
-      });
-    } else {
-      // Multiple imports of this file exist.
-      // 1. Primary dataset entry represents the latest active version
-      result.push({
-        uploadId: latestJob.uploadId,
-        fileName: latestJob.fileName,
-        totalRows: latestJob.totalRows || 0,
-        status: latestJob.status,
-        createdAt: latestJob.createdAt,
-        label: `${latestJob.fileName} (${(latestJob.totalRows || 0).toLocaleString()} rows)`,
-        isLatest: true,
-        version: sorted.length
-      });
-
-      // 2. If the user currently has an earlier version active, include it explicitly with clear version tag
-      if (activeId && activeId !== latestJob.uploadId) {
-        const activeEarlierIdx = sorted.findIndex((j) => j.uploadId === activeId);
-        if (activeEarlierIdx !== -1) {
-          const earlierJob = sorted[activeEarlierIdx];
-          result.push({
-            uploadId: earlierJob.uploadId,
-            fileName: earlierJob.fileName,
-            totalRows: earlierJob.totalRows || 0,
-            status: earlierJob.status,
-            createdAt: earlierJob.createdAt,
-            label: `${earlierJob.fileName} — Version ${activeEarlierIdx + 1} (${(earlierJob.totalRows || 0).toLocaleString()} rows — Active)`,
-            isLatest: false,
-            version: activeEarlierIdx + 1
-          });
-        }
-      }
-    }
-  });
-
-  return result;
 };
 
 export interface DashboardStats {

@@ -1,9 +1,13 @@
 import { Router, Response } from 'express';
 import UploadRow from '../models/UploadRow';
 import ImportJob from '../models/ImportJob';
-import { requireAuth, AuthedRequest } from '../middleware/authMiddleware';
+import TransformedRow from '../models/TransformedRow';
+import ImportedRow from '../models/ImportedRow';
+import ValidationRecord from '../models/ValidationRecord';
+import { requireAuth, AuthedRequest, createOwnerFilter } from '../middleware/authMiddleware';
 import { isMissingValue, parseValue, getColumnStats, normalizeReplacement } from '../utils/dataUtils';
 import { generateDatasetProfile } from './profilingRoutes';
+
 const router = Router();
 router.use(requireAuth);
 
@@ -27,10 +31,7 @@ type MissingDataSummary = {
 
 type StrategyChoice = 'keep' | 'remove' | 'fill' | 'mean' | 'median' | 'mode';
 
-const createJobFilter = (userEmail?: string, userId?: string) => {
-  const owners = [userEmail, userId].filter(Boolean) as string[];
-  return owners.length ? { createdBy: { $in: owners } } : {};
-};
+const createJobFilter = (userEmail?: string, userId?: string) => createOwnerFilter(userEmail, userId);
 
 const executeStrategyOnColumn = async (
   uploadId: string,
@@ -39,37 +40,39 @@ const executeStrategyOnColumn = async (
   strategy: StrategyChoice,
   fillValue?: unknown
 ) => {
-  const filter: any = { uploadId, createdBy: { $in: owners } };
+  const filter: any = owners.length ? { uploadId, createdBy: { $in: owners } } : { uploadId };
 
   if (strategy === 'remove') {
     await UploadRow.deleteMany({
-      uploadId,
-      createdBy: { $in: owners },
+      ...filter,
       $or: [{ [`data.${column}`]: { $exists: false } }, { [`data.${column}`]: null }, { [`data.${column}`]: '' }]
     });
   } else if (strategy !== 'keep') {
     let replacement: any = null;
     if (strategy === 'fill') {
       replacement = normalizeReplacement(fillValue, 'string');
-    } else if (strategy === 'mean') {
-      const agg = await UploadRow.aggregate([
-        { $match: { ...filter, [`data.${column}`]: { $type: 'number' } } },
-        { $group: { _id: null, avg: { $avg: `$data.${column}` } } }
-      ]).allowDiskUse(true);
-      replacement = agg[0]?.avg != null ? Math.round(agg[0].avg * 100) / 100 : null;
-    } else if (strategy === 'median') {
+    } else if (strategy === 'mean' || strategy === 'median') {
       const sampleAgg = await UploadRow.aggregate([
-        { $match: { ...filter, [`data.${column}`]: { $type: 'number' } } },
-        { $sample: { size: 1000 } },
-        { $project: { v: `$data.${column}` } }
+        { $match: { ...filter, [`data.${column}`]: { $nin: [null, ''] } } },
+        { $project: { v: `$data.${column}` } },
+        { $limit: 10000 }
       ]).allowDiskUse(true);
-      const vals = sampleAgg
-        .map((s: any) => Number(s.v))
-        .filter((v: number) => Number.isFinite(v))
-        .sort((a: number, b: number) => a - b);
-      if (vals.length) {
-        const mid = Math.floor(vals.length / 2);
-        replacement = vals.length % 2 === 1 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+
+      const numericValues = sampleAgg
+        .map((s: any) => (typeof s.v === 'number' ? s.v : parseFloat(String(s.v))))
+        .filter((n: number) => !isNaN(n) && Number.isFinite(n));
+
+      if (numericValues.length > 0) {
+        if (strategy === 'mean') {
+          const sum = numericValues.reduce((a, b) => a + b, 0);
+          replacement = Math.round((sum / numericValues.length) * 100) / 100;
+        } else {
+          numericValues.sort((a, b) => a - b);
+          const mid = Math.floor(numericValues.length / 2);
+          replacement = numericValues.length % 2 === 1
+            ? numericValues[mid]
+            : Math.round(((numericValues[mid - 1] + numericValues[mid]) / 2) * 100) / 100;
+        }
       }
     } else if (strategy === 'mode') {
       const modeAgg = await UploadRow.aggregate([
@@ -197,6 +200,15 @@ router.get('/', async (req: AuthedRequest, res: Response) => {
   }
 });
 
+// Helper to invalidate downstream artifacts when raw rows are cleaned
+const invalidateDownstreamStages = async (uploadId: string) => {
+  await Promise.all([
+    TransformedRow.deleteMany({ uploadId }),
+    ImportedRow.deleteMany({ uploadId }),
+    ValidationRecord.deleteMany({ uploadId })
+  ]);
+};
+
 // POST /api/cleaning/:uploadId/apply -> Apply strategy for a single column
 router.post('/:uploadId/apply', async (req: AuthedRequest, res: Response) => {
   try {
@@ -212,6 +224,7 @@ router.post('/:uploadId/apply', async (req: AuthedRequest, res: Response) => {
     if (!job) return res.status(404).json({ message: 'Import job not found' });
 
     await executeStrategyOnColumn(uploadId, owners, columnName, strategy, fillValue);
+    await invalidateDownstreamStages(uploadId);
 
     const updatedStrategies = {
       ...(job.cleaningStrategies ?? {}),
@@ -220,20 +233,30 @@ router.post('/:uploadId/apply', async (req: AuthedRequest, res: Response) => {
 
     const stages = job.stages ?? {};
     stages.cleaning = { status: 'completed', finishedAt: new Date() };
+    stages.transformation = { status: 'pending' };
     stages.validation = { status: 'pending' };
+    stages.ingestion = { status: 'pending' };
 
     const rowFilter = { uploadId, ...createJobFilter(req.user?.email, req.user?.id) };
     const newTotalRows = await UploadRow.countDocuments(rowFilter);
 
     await ImportJob.findOneAndUpdate(
       rowFilter,
-      { cleaningStrategies: updatedStrategies, stages, totalRows: newTotalRows, updatedAt: new Date() }
+      {
+        cleaningStrategies: updatedStrategies,
+        stages,
+        totalRows: newTotalRows,
+        transformedAt: undefined,
+        importedAt: undefined,
+        importedRows: 0,
+        updatedAt: new Date()
+      }
     );
 
     // Regenerate profile with updated data
     await generateDatasetProfile(uploadId, req.user?.email || req.user?.id, true);
 
-    res.json({ message: `Strategy applied to ${columnName} successfully` });
+    res.json({ message: `Strategy applied to ${columnName} successfully. Downstream transformation & validation reset.` });
   } catch (error) {
     res.status(500).json({ message: 'Failed to apply cleaning strategy', error: String(error) });
   }
@@ -259,22 +282,34 @@ router.post('/:uploadId/apply-all', async (req: AuthedRequest, res: Response) =>
       }
     }
 
+    await invalidateDownstreamStages(uploadId);
+
     const stages = job.stages ?? {};
     stages.cleaning = { status: 'completed', finishedAt: new Date() };
+    stages.transformation = { status: 'pending' };
     stages.validation = { status: 'pending' };
+    stages.ingestion = { status: 'pending' };
 
     const rowFilter = { uploadId, ...createJobFilter(req.user?.email, req.user?.id) };
     const newTotalRows = await UploadRow.countDocuments(rowFilter);
 
     await ImportJob.findOneAndUpdate(
       rowFilter,
-      { cleaningStrategies: strategies, stages, totalRows: newTotalRows, updatedAt: new Date() }
+      {
+        cleaningStrategies: strategies,
+        stages,
+        totalRows: newTotalRows,
+        transformedAt: undefined,
+        importedAt: undefined,
+        importedRows: 0,
+        updatedAt: new Date()
+      }
     );
 
     // Regenerate profile with updated data
     await generateDatasetProfile(uploadId, req.user?.email || req.user?.id, true);
 
-    res.json({ message: 'All cleaning strategies applied successfully' });
+    res.json({ message: 'All cleaning strategies applied successfully. Downstream transformation & validation reset.' });
   } catch (error) {
     res.status(500).json({ message: 'Failed to apply cleaning strategies', error: String(error) });
   }
@@ -290,22 +325,33 @@ router.post('/', async (req: AuthedRequest, res: Response) => {
 
     const owners = [req.user?.email, req.user?.id].filter(Boolean) as string[];
     await executeStrategyOnColumn(uploadId, owners, column, strategy, fillValue);
+    await invalidateDownstreamStages(uploadId);
 
     const rowFilter = { uploadId, ...createJobFilter(req.user?.email, req.user?.id) };
     const newTotalRows = await UploadRow.countDocuments(rowFilter);
 
     const job = await ImportJob.findOne(rowFilter);
     const stages = job?.stages ?? {};
+    stages.cleaning = { status: 'completed', finishedAt: new Date() };
+    stages.transformation = { status: 'pending' };
     stages.validation = { status: 'pending' };
+    stages.ingestion = { status: 'pending' };
 
     await ImportJob.findOneAndUpdate(
       rowFilter,
-      { stages, totalRows: newTotalRows, updatedAt: new Date() }
+      {
+        stages,
+        totalRows: newTotalRows,
+        transformedAt: undefined,
+        importedAt: undefined,
+        importedRows: 0,
+        updatedAt: new Date()
+      }
     );
 
     await generateDatasetProfile(uploadId, req.user?.email || req.user?.id, true);
 
-    res.json({ message: 'Missing data strategy applied' });
+    res.json({ message: 'Missing data strategy applied. Downstream stages reset.' });
   } catch (error) {
     res.status(500).json({ message: 'Could not apply missing data strategy', error: String(error) });
   }

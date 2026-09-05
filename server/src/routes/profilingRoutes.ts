@@ -1,12 +1,13 @@
 import { Router, Response } from 'express';
 import UploadRow from '../models/UploadRow';
 import ImportJob from '../models/ImportJob';
-import { requireAuth, AuthedRequest } from '../middleware/authMiddleware';
+import ValidationRecord from '../models/ValidationRecord';
+import { requireAuth, AuthedRequest, createOwnerFilter } from '../middleware/authMiddleware';
 
 const router = Router();
 router.use(requireAuth);
 
-type ColumnProfile = {
+export type ColumnProfile = {
   name: string;
   type: 'number' | 'date' | 'string' | 'boolean' | 'unknown';
   totalValues: number;
@@ -19,14 +20,9 @@ type ColumnProfile = {
   mean?: number;
   median?: number;
   mode?: unknown;
-  q1?: number;
-  q3?: number;
-  iqr?: number;
-  outlierCount?: number;
-  outlierPercentage?: number;
 };
 
-type DatasetProfile = {
+export type DatasetProfile = {
   totalRows: number;
   totalColumns: number;
   totalMissingValues: number;
@@ -35,71 +31,33 @@ type DatasetProfile = {
   numberTextColumns: number;
   numberDateColumns: number;
   datasetSize: number;
-  qualityScore: number;
+  qualityScore: number | null;
   rowsWithMissingData: number;
   completeRows: number;
   missingDataPercentage: number;
   qualityBreakdown: {
     completeness: number;
-    validity: number;
+    validity: number | null;
     uniqueness: number;
     consistency: number;
   };
   columns: ColumnProfile[];
 };
 
-import { isMissingValue, parseValue, getValueType } from '../utils/dataUtils';
+export async function generateDatasetProfile(
+  uploadId: string,
+  owner?: string,
+  forceRecompute: boolean = false
+): Promise<DatasetProfile | null> {
+  const ownerFilter = owner ? createOwnerFilter(owner, owner) : {};
+  const job = await ImportJob.findOne({ uploadId, ...ownerFilter }).lean() || await ImportJob.findOne({ uploadId }).lean();
 
-
-const calculateStats = (values: (number | Date | string | boolean | null)[]) => {
-  const nonMissing = values.filter((v) => v !== null) as (number | Date | string | boolean)[];
-  const numeric = nonMissing.filter((v): v is number => typeof v === 'number');
-  const dates = nonMissing.filter((v): v is Date => v instanceof Date);
-  const counts = new Map<string, number>();
-  nonMissing.forEach((value) => {
-    const key = typeof value === 'object' ? String((value as Date).toISOString()) : String(value);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  });
-  const sortedNumeric = [...numeric].sort((a, b) => a - b);
-  const modeEntry = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0];
-  const inferredType: ColumnProfile['type'] = numeric.length ? 'number' : dates.length ? 'date' : nonMissing.length ? 'string' : 'string';
-  return {
-    uniqueValues: counts.size,
-    duplicateValues: nonMissing.length - counts.size,
-    min: sortedNumeric.length ? sortedNumeric[0] : undefined,
-    max: sortedNumeric.length ? sortedNumeric[sortedNumeric.length - 1] : undefined,
-    mean: sortedNumeric.length ? sortedNumeric.reduce((sum, value) => sum + value, 0) / sortedNumeric.length : undefined,
-    median: sortedNumeric.length
-      ? sortedNumeric.length % 2 === 1
-        ? sortedNumeric[(sortedNumeric.length - 1) / 2]
-        : (sortedNumeric[sortedNumeric.length / 2 - 1] + sortedNumeric[sortedNumeric.length / 2]) / 2
-      : undefined,
-    mode: modeEntry ? modeEntry[0] : undefined,
-    type: inferredType
-  };
-};
-
-const createQualityScore = (profile: DatasetProfile) => {
-  const completeness = profile.totalRows > 0 ? 100 - Math.round((profile.totalMissingValues / (profile.totalRows * profile.totalColumns)) * 100) : 100;
-  const uniqueness = profile.totalRows > 0 ? Math.round(((profile.totalRows - profile.totalDuplicateRows) / profile.totalRows) * 100) : 100;
-  const validity = 100;
-  const consistency = 100 - Math.round(profile.totalDuplicateRows > 0 ? Math.min(20, (profile.totalDuplicateRows / profile.totalRows) * 100) : 0);
-  const score = Math.round((completeness + validity + uniqueness + consistency) / 4);
-  return {
-    score: Math.max(0, Math.min(100, score)),
-    breakdown: { completeness, validity, uniqueness, consistency }
-  };
-};
-
-export async function generateDatasetProfile(uploadId: string, owner?: string, forceRecompute: boolean = false): Promise<DatasetProfile | null> {
-  const owners = [owner].filter(Boolean) as string[];
-  const job = await ImportJob.findOne({ uploadId }).lean();
-
-  const rowFilter: any = owners.length ? { uploadId, createdBy: { $in: owners } } : { uploadId };
+  const rowFilter: any = Object.keys(ownerFilter).length ? { uploadId, ...ownerFilter } : { uploadId };
   let totalRows = await UploadRow.countDocuments(rowFilter);
-  if (!totalRows && owners.length) {
+  if (!totalRows) {
     totalRows = await UploadRow.countDocuments({ uploadId });
     if (totalRows) {
+      delete rowFilter.$or;
       delete rowFilter.createdBy;
     }
   }
@@ -131,7 +89,7 @@ export async function generateDatasetProfile(uploadId: string, owner?: string, f
     columnNames = (colsAgg[0]?.keys ?? []) as string[];
   }
 
-  // Fast single aggregation for all columns missing values & dataset size
+  // Single aggregation for all column missing counts & dataset size
   const groupStage: any = {
     _id: null,
     totalBsonSize: { $sum: { $bsonSize: '$data' } }
@@ -154,30 +112,38 @@ export async function generateDatasetProfile(uploadId: string, owner?: string, f
     };
   });
 
-  const orConditions = columnNames.map((c) => ({
-    $or: [
-      { [`data.${c}`]: { $exists: false } },
-      { [`data.${c}`]: null },
-      { [`data.${c}`]: '' }
-    ]
-  }));
+  // Flat logical OR array for row-level missing calculation
+  const flatOrConditions: any[] = [];
+  columnNames.forEach((c) => {
+    flatOrConditions.push({ [`data.${c}`]: { $exists: false } });
+    flatOrConditions.push({ [`data.${c}`]: null });
+    flatOrConditions.push({ [`data.${c}`]: '' });
+  });
 
   const [aggResults, uniqueRowsAgg, missingRowsCount] = await Promise.all([
     UploadRow.aggregate([{ $match: rowFilter }, { $group: groupStage }]).allowDiskUse(true),
-    UploadRow.aggregate([
-      { $match: rowFilter },
-      { $group: { _id: '$data' } },
-      { $count: 'unique' }
-    ]).allowDiskUse(true),
-    orConditions.length ? UploadRow.countDocuments({ ...rowFilter, $or: orConditions }) : 0
+    totalRows > 2000
+      ? UploadRow.aggregate([
+          { $match: rowFilter },
+          { $sample: { size: 2000 } },
+          { $group: { _id: '$data' } },
+          { $count: 'unique' }
+        ]).allowDiskUse(true)
+      : UploadRow.aggregate([
+          { $match: rowFilter },
+          { $group: { _id: '$data' } },
+          { $count: 'unique' }
+        ]).allowDiskUse(true),
+    flatOrConditions.length ? UploadRow.countDocuments({ ...rowFilter, $or: flatOrConditions }) : 0
   ]);
 
   const stats = aggResults[0] || {};
   const datasetSize = stats.totalBsonSize || 0;
-  const uniqueRows = uniqueRowsAgg[0]?.unique ?? 0;
-  const duplicateRows = totalRows - uniqueRows;
+  const sampleUnique = uniqueRowsAgg[0]?.unique ?? 0;
+  const uniqueRows = totalRows > 2000 ? Math.round((sampleUnique / 2000) * totalRows) : sampleUnique;
+  const duplicateRows = Math.max(0, totalRows - uniqueRows);
 
-  // In parallel, get column unique values and determine schema types from actual data
+  // Column statistics
   const columns: ColumnProfile[] = await Promise.all(
     columnNames.map(async (column) => {
       const missingValues = stats['missing_' + column] || 0;
@@ -188,7 +154,7 @@ export async function generateDatasetProfile(uploadId: string, owner?: string, f
       ]).allowDiskUse(true);
 
       const uniqueValues = uniqueAgg[0]?.uniqueCount ?? 0;
-      const duplicateValues = totalRows - uniqueValues;
+      const duplicateValues = Math.max(0, totalRows - uniqueValues);
 
       // Sample-based type detection
       const sampleVals = sampleDocs
@@ -258,10 +224,58 @@ export async function generateDatasetProfile(uploadId: string, owner?: string, f
   const numberTextColumns = columns.filter((col) => col.type === 'string').length;
 
   const rowsWithMissingData = missingRowsCount;
-  const completeRows = totalRows - rowsWithMissingData;
-  const missingDataPercentage = totalRows && columnNames.length
-    ? Math.round((totalMissingValues / (totalRows * columnNames.length)) * 100)
+  const completeRows = Math.max(0, totalRows - rowsWithMissingData);
+  const totalCells = totalRows * (columnNames.length || 1);
+  const missingDataPercentage = totalCells > 0
+    ? Math.round((totalMissingValues / totalCells) * 100)
     : 0;
+
+  // Compute Completeness (0-100) with full precision
+  const completeness = totalCells > 0
+    ? Math.max(0, 100 - ((totalMissingValues / totalCells) * 100))
+    : 100;
+
+  // Uniqueness & Consistency
+  const uniqueness = totalRows > 0
+    ? Math.max(0, Math.round(((totalRows - duplicateRows) / totalRows) * 100))
+    : 100;
+  const consistency = 100 - Math.round(duplicateRows > 0 ? Math.min(20, (duplicateRows / totalRows) * 100) : 0);
+
+  // Check validation state
+  const validationStatus = job?.stages?.validation?.status;
+  let validityScore: number | null = null;
+  let finalQualityScore: number | null = null;
+
+  if (validationStatus === 'completed') {
+    const [totalErrors, totalWarnings] = await Promise.all([
+      ValidationRecord.countDocuments({ uploadId, severity: 'error' }),
+      ValidationRecord.countDocuments({ uploadId, severity: 'warning' })
+    ]);
+
+    const warningPenalty = Math.min(30, (totalWarnings / (totalCells || 1)) * 100 * 10);
+    const errorPenalty = Math.min(60, (totalErrors / (totalRows || 1)) * 100 * 2.5);
+    validityScore = Math.max(0, 100 - errorPenalty - warningPenalty);
+
+    // Mapping score (0-100)
+    const mappingKeys = job?.mapping ? Object.keys(job.mapping) : [];
+    const mappingScore = mappingKeys.length > 0
+      ? Math.min(100, (mappingKeys.length / (columnNames.length || 1)) * 100)
+      : 100;
+
+    // Transformation score (0-100)
+    const failedRows = job?.failedRows || 0;
+    const transformationScore = totalRows > 0
+      ? Math.max(0, ((totalRows - failedRows) / totalRows) * 100)
+      : 100;
+
+    // Final quality formula: Completeness * 0.40 + Validation * 0.30 + Mapping * 0.15 + Transformation * 0.15
+    finalQualityScore = Math.round(
+      completeness * 0.40 +
+      validityScore * 0.30 +
+      mappingScore * 0.15 +
+      transformationScore * 0.15
+    );
+  }
 
   const profile: DatasetProfile = {
     totalRows,
@@ -272,17 +286,18 @@ export async function generateDatasetProfile(uploadId: string, owner?: string, f
     numberTextColumns,
     numberDateColumns,
     datasetSize,
-    qualityScore: 0,
+    qualityScore: finalQualityScore,
     rowsWithMissingData,
     completeRows,
     missingDataPercentage,
-    qualityBreakdown: { completeness: 0, validity: 0, uniqueness: 0, consistency: 0 },
+    qualityBreakdown: {
+      completeness: Math.round(completeness * 100) / 100,
+      validity: validityScore !== null ? Math.round(validityScore * 100) / 100 : null,
+      uniqueness,
+      consistency
+    },
     columns
   };
-
-  const quality = createQualityScore(profile);
-  profile.qualityScore = quality.score;
-  profile.qualityBreakdown = quality.breakdown;
 
   // Persist into ImportJob
   try {

@@ -12,7 +12,9 @@ import {
   Check,
   Play,
   RotateCw,
-  Info
+  Plus,
+  Trash2,
+  FileSpreadsheet
 } from 'lucide-react';
 import api from '../services/api';
 import { useDataset } from '../contexts/DatasetContext';
@@ -22,9 +24,10 @@ type MappingItem = {
   target: string;
   enabled: boolean;
   transformCode?: string;
+  isCustom?: boolean;
 };
 
-const canonicalTargets = [
+const canonicalHRTargets = [
   { key: 'EmployeeID', label: 'Employee ID', type: 'string', required: true },
   { key: 'Age', label: 'Age', type: 'number', required: false },
   { key: 'Attrition', label: 'Attrition Status', type: 'string', required: true },
@@ -44,7 +47,7 @@ const canonicalTargets = [
 const MappingPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { activeUploadId, activeJob, allJobs, datasets, selectDataset, refreshActiveDataset } = useDataset();
+  const { activeUploadId, activeJob, datasets, selectDataset, refreshActiveDataset } = useDataset();
 
   const queryUploadId = searchParams.get('uploadId') ?? '';
   const currentUploadId = queryUploadId || activeUploadId || '';
@@ -60,6 +63,11 @@ const MappingPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [editingCodeField, setEditingCodeField] = useState<string | null>(null);
   const [codeBuffer, setCodeBuffer] = useState('');
+
+  // Add custom target modal state
+  const [showAddCustomModal, setShowAddCustomModal] = useState(false);
+  const [newTargetName, setNewTargetName] = useState('');
+  const [newTargetSource, setNewTargetSource] = useState('');
 
   // Sync URL query param with DatasetContext
   useEffect(() => {
@@ -89,41 +97,59 @@ const MappingPage = () => {
       setAvailableColumns(cols);
 
       const savedMapping = mappingResp.data.mapping || job.mapping || {};
+      const savedKeys = Object.keys(savedMapping);
 
-      // Initialize mapping items based on canonical targets and dataset columns
-      const initialItems: MappingItem[] = canonicalTargets.map((target) => {
-        const savedEntry = savedMapping[target.key];
-        let sourceField = '';
-        let transformCode: string | undefined = undefined;
-        let enabled = false;
+      let items: MappingItem[] = [];
 
-        if (savedEntry) {
-          if (typeof savedEntry === 'string') {
-            sourceField = savedEntry;
-            enabled = true;
-          } else if (typeof savedEntry === 'object' && savedEntry.source) {
-            sourceField = savedEntry.source;
-            transformCode = savedEntry.transformCode;
-            enabled = true;
+      if (savedKeys.length > 0) {
+        items = savedKeys.map((targetKey) => {
+          const entry = savedMapping[targetKey];
+          let source = '';
+          let transformCode: string | undefined = undefined;
+
+          if (typeof entry === 'string') {
+            source = entry;
+          } else if (entry && typeof entry === 'object') {
+            source = entry.source || '';
+            transformCode = entry.transformCode;
           }
+
+          return {
+            target: targetKey,
+            source,
+            enabled: Boolean(source),
+            transformCode,
+            isCustom: !canonicalHRTargets.some((t) => t.key === targetKey)
+          };
+        });
+      } else {
+        // Check if dataset matches HR dataset or is generic
+        const hasHRFields = cols.some((c) =>
+          ['attrition', 'employeeid', 'department', 'jobrole'].includes(c.toLowerCase())
+        );
+
+        if (hasHRFields) {
+          items = canonicalHRTargets.map((target) => {
+            const match = cols.find((c) => c.toLowerCase() === target.key.toLowerCase());
+            return {
+              target: target.key,
+              source: match || '',
+              enabled: Boolean(match),
+              isCustom: false
+            };
+          });
         } else {
-          // Auto-match exact name
-          const exactMatch = cols.find((c) => c.toLowerCase() === target.key.toLowerCase());
-          if (exactMatch) {
-            sourceField = exactMatch;
-            enabled = true;
-          }
+          // Generic 1-to-1 default mapping
+          items = cols.map((col) => ({
+            target: col,
+            source: col,
+            enabled: true,
+            isCustom: true
+          }));
         }
+      }
 
-        return {
-          target: target.key,
-          source: sourceField,
-          enabled,
-          transformCode
-        };
-      });
-
-      setMappingItems(initialItems);
+      setMappingItems(items);
     } catch (err: any) {
       setError(err?.response?.data?.message || 'Failed to load mapping schema.');
     } finally {
@@ -160,7 +186,63 @@ const MappingPage = () => {
         return match ? { ...item, source: match, enabled: true } : item;
       })
     );
-    setMessage('Auto-mapped matching schema columns.');
+    setMessage('Auto-matched matching columns.');
+  };
+
+  const handle1to1Default = () => {
+    const items: MappingItem[] = availableColumns.map((col) => ({
+      target: col,
+      source: col,
+      enabled: true,
+      isCustom: true
+    }));
+    setMappingItems(items);
+    setMessage('Loaded 1-to-1 default mapping for all dataset columns.');
+  };
+
+  const handleLoadHRTemplate = () => {
+    const items: MappingItem[] = canonicalHRTargets.map((target) => {
+      const match = availableColumns.find((c) => c.toLowerCase() === target.key.toLowerCase());
+      return {
+        target: target.key,
+        source: match || '',
+        enabled: Boolean(match),
+        isCustom: false
+      };
+    });
+    setMappingItems(items);
+    setMessage('Loaded HR Canonical Schema Template.');
+  };
+
+  const handleAddCustomTarget = () => {
+    const trimmedName = newTargetName.trim();
+    if (!trimmedName) {
+      setError('Target column name cannot be empty.');
+      return;
+    }
+    if (mappingItems.some((i) => i.target.toLowerCase() === trimmedName.toLowerCase())) {
+      setError(`Target column "${trimmedName}" already exists.`);
+      return;
+    }
+
+    setMappingItems((prev) => [
+      ...prev,
+      {
+        target: trimmedName,
+        source: newTargetSource,
+        enabled: Boolean(newTargetSource),
+        isCustom: true
+      }
+    ]);
+
+    setNewTargetName('');
+    setNewTargetSource('');
+    setShowAddCustomModal(false);
+    setMessage(`Added custom target field "${trimmedName}".`);
+  };
+
+  const handleRemoveItem = (targetKey: string) => {
+    setMappingItems((prev) => prev.filter((item) => item.target !== targetKey));
   };
 
   const handleSelectAll = (check: boolean) => {
@@ -200,7 +282,6 @@ const MappingPage = () => {
     setTransformError(null);
     setMessage('');
 
-    // First ensure mapping is saved
     const mappingPayload = mappingItems
       .filter((item) => item.enabled && item.source)
       .reduce((acc, item) => {
@@ -209,6 +290,12 @@ const MappingPage = () => {
           : item.source;
         return acc;
       }, {} as Record<string, any>);
+
+    if (!Object.keys(mappingPayload).length) {
+      setTransforming(false);
+      setError('Please enable and map at least one field before transforming.');
+      return;
+    }
 
     try {
       await api.post(`/imports/${currentUploadId}/mapping`, { mapping: mappingPayload });
@@ -220,15 +307,15 @@ const MappingPage = () => {
       if (sandboxErrors.length > 0 && failedCount === resp.data.transformedCount) {
         setTransformError({
           reason: sandboxErrors[0] || 'Unknown transformation error occurred.',
-          mappedCount: mappingItems.filter((i) => i.enabled).length
+          mappedCount: Object.keys(mappingPayload).length
         });
       } else {
         setMessage(`Transformation complete (${resp.data.transformedCount?.toLocaleString()} rows processed).`);
         await refreshActiveDataset();
-        navigate(`/preview?uploadId=${currentUploadId}`);
+        navigate(`/validations?uploadId=${currentUploadId}`);
       }
     } catch (err: any) {
-      const mappedCount = mappingItems.filter((i) => i.enabled).length;
+      const mappedCount = Object.keys(mappingPayload).length;
       const backendError = err?.response?.data?.message || err?.response?.data?.error || 'Additional error details are not available.';
       setTransformError({
         reason: backendError,
@@ -242,7 +329,7 @@ const MappingPage = () => {
   const openCodeModal = (targetKey: string) => {
     const item = mappingItems.find((i) => i.target === targetKey);
     setEditingCodeField(targetKey);
-    setCodeBuffer(item?.transformCode || `// Example: uppercase string or parse number\nreturn String(value).toUpperCase();`);
+    setCodeBuffer(item?.transformCode || `// Available: value (current field), row (entire record)\nreturn String(value).toUpperCase();`);
   };
 
   const saveCustomCode = () => {
@@ -317,7 +404,7 @@ const MappingPage = () => {
         </div>
       )}
 
-      {/* Comprehensive Transformation Error Card (Item 10) */}
+      {/* Transformation Error Card */}
       {transformError && (
         <div className="saas-card p-6 border-rose-300 dark:border-rose-800 bg-rose-50/50 dark:bg-rose-950/20">
           <div className="flex items-start gap-4">
@@ -336,8 +423,8 @@ const MappingPage = () => {
                   <span className="font-semibold text-rose-600">Transformation</span>
                 </div>
                 <div className="p-3 rounded-lg bg-theme-surface border border-theme-border">
-                  <span className="text-theme-text-muted block text-[11px]">Mapping</span>
-                  <span className="font-semibold text-theme-text-primary">{transformError.mappedCount} / {canonicalTargets.length}</span>
+                  <span className="text-theme-text-muted block text-[11px]">Mapped Fields</span>
+                  <span className="font-semibold text-theme-text-primary">{transformError.mappedCount} fields</span>
                 </div>
               </div>
 
@@ -378,13 +465,13 @@ const MappingPage = () => {
         </div>
       )}
 
-      {/* Empty State: No Dataset Selected */}
+      {/* Empty State */}
       {!currentUploadId && !loading && (
         <div className="saas-card p-12 text-center">
           <Layers size={36} className="mx-auto text-theme-text-muted mb-3 opacity-60" />
           <h3 className="text-base font-bold text-theme-text-primary">No Dataset Selected</h3>
           <p className="text-xs text-theme-text-muted mt-1 max-w-sm mx-auto">
-            Select a dataset from the dropdown above to bind fields to the canonical schema.
+            Select a dataset from the dropdown above to bind fields to the destination schema.
           </p>
           <button
             type="button"
@@ -397,7 +484,7 @@ const MappingPage = () => {
       )}
 
       {/* Mapping Studio Main Workspace */}
-      {currentUploadId && (
+      {currentUploadId && !loading && (
         <div className="saas-card overflow-hidden">
           {/* Studio Header Toolbar */}
           <div className="p-4 sm:p-5 border-b border-theme-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-theme-surface-soft">
@@ -414,7 +501,34 @@ const MappingPage = () => {
               </div>
             </div>
 
+            {/* Quick Templates & Action Buttons */}
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handle1to1Default}
+                title="Map all dataset columns 1-to-1"
+                className="btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5"
+              >
+                <FileSpreadsheet size={13} />
+                <span>1-to-1 Default</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleLoadHRTemplate}
+                title="Load HR Schema Template"
+                className="btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5"
+              >
+                <Layers size={13} />
+                <span>HR Template</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAddCustomModal(true)}
+                className="btn-secondary text-xs py-1.5 px-3 rounded-lg flex items-center gap-1.5"
+              >
+                <Plus size={13} />
+                <span>+ Custom Field</span>
+              </button>
               <button
                 type="button"
                 onClick={handleAutoMap}
@@ -430,7 +544,7 @@ const MappingPage = () => {
                 className="btn-secondary text-xs py-1.5 px-4 rounded-lg flex items-center gap-1.5"
               >
                 <Check size={13} />
-                <span>{saving ? 'Saving...' : 'Save Mapping'}</span>
+                <span>{saving ? 'Saving...' : 'Save'}</span>
               </button>
               <button
                 type="button"
@@ -449,26 +563,27 @@ const MappingPage = () => {
             <div className="col-span-1 flex items-center gap-2">
               <input
                 type="checkbox"
-                checked={enabledCount === canonicalTargets.length}
+                checked={enabledCount === mappingItems.length && mappingItems.length > 0}
                 onChange={(e) => handleSelectAll(e.target.checked)}
                 className="rounded border-theme-border cursor-pointer"
               />
               <span>Use</span>
             </div>
-            <div className="col-span-4">Target Canonical Field</div>
+            <div className="col-span-4">Target Schema Column</div>
             <div className="col-span-5">Source Dataset Column</div>
-            <div className="col-span-2 text-right">Transform Code</div>
+            <div className="col-span-2 text-right">Transform Code / Action</div>
           </div>
 
           {/* Mapping Rows */}
           <div className="divide-y divide-theme-border">
             {filteredItems.map((item) => {
-              const targetMeta = canonicalTargets.find((t) => t.key === item.target);
+              const hrMeta = canonicalHRTargets.find((t) => t.key === item.target);
               return (
                 <div
                   key={item.target}
-                  className={`grid grid-cols-12 gap-3 px-5 py-3.5 items-center transition ${item.enabled ? 'bg-theme-surface hover:bg-theme-surface-soft' : 'bg-theme-surface/50 opacity-60'
-                    }`}
+                  className={`grid grid-cols-12 gap-3 px-5 py-3.5 items-center transition ${
+                    item.enabled ? 'bg-theme-surface hover:bg-theme-surface-soft' : 'bg-theme-surface/50 opacity-60'
+                  }`}
                 >
                   <div className="col-span-1">
                     <input
@@ -482,18 +597,27 @@ const MappingPage = () => {
                   <div className="col-span-4">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-theme-text-primary">{item.target}</span>
-                      {targetMeta?.required && (
+                      {hrMeta?.required && (
                         <span className="text-[10px] text-rose-500 font-bold">*Required</span>
                       )}
+                      {item.isCustom && (
+                        <span className="text-[10px] text-sky-500 font-semibold px-1.5 py-0.5 rounded bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800">
+                          Custom
+                        </span>
+                      )}
                     </div>
-                    <p className="text-[11px] text-theme-text-muted mt-0.5">{targetMeta?.label} ({targetMeta?.type})</p>
+                    {hrMeta && (
+                      <p className="text-[11px] text-theme-text-muted mt-0.5">
+                        {hrMeta.label} ({hrMeta.type})
+                      </p>
+                    )}
                   </div>
 
                   <div className="col-span-5">
                     <select
                       value={item.source}
                       onChange={(e) => handleSourceChange(item.target, e.target.value)}
-                      className="saas-input w-full text-xs py-1.5 px-3"
+                      className="saas-input w-full text-xs py-1.5 px-3 cursor-pointer"
                     >
                       <option value="">— Select Source Column —</option>
                       {availableColumns.map((col) => (
@@ -504,37 +628,136 @@ const MappingPage = () => {
                     </select>
                   </div>
 
-                  <div className="col-span-2 text-right">
+                  <div className="col-span-2 text-right flex items-center justify-end gap-2">
                     <button
                       type="button"
                       onClick={() => openCodeModal(item.target)}
-                      className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition ${item.transformCode
+                      className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition ${
+                        item.transformCode
                           ? 'bg-theme-surface-blue border-theme-border-strong text-theme-primary font-semibold'
                           : 'bg-theme-surface border-theme-border text-theme-text-muted hover:text-theme-text-primary'
-                        }`}
+                      }`}
                     >
                       <Code size={13} />
-                      <span>{item.transformCode ? 'V8 Active' : '+ Code'}</span>
+                      <span>{item.transformCode ? 'JS Active' : '+ JS'}</span>
                     </button>
+                    {item.isCustom && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveItem(item.target)}
+                        title="Remove custom field"
+                        className="p-1 text-rose-500 hover:text-rose-700 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
+
+          {/* Footer Action Bar */}
+          <div className="p-4 sm:p-5 bg-theme-surface-soft border-t border-theme-border flex items-center justify-between">
+            <span className="text-xs text-theme-text-muted font-medium">
+              {enabledCount} of {mappingItems.length} fields enabled for transformation
+            </span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => navigate(`/validations?uploadId=${currentUploadId}`)}
+                className="btn-secondary text-xs py-2 px-4 rounded-xl flex items-center gap-1.5"
+              >
+                <span>Go to Validations</span>
+                <ArrowRight size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={handleRunTransformation}
+                disabled={transforming}
+                className="btn-primary text-xs py-2 px-5 rounded-xl flex items-center gap-2"
+              >
+                <span>{transforming ? 'Transforming...' : 'Run Transformation & Preview'}</span>
+                <Play size={14} />
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* V8 Transform Code Editor Drawer / Modal */}
+      {/* Add Custom Target Modal */}
+      {showAddCustomModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="saas-card max-w-md w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-theme-text-primary">Add Custom Target Field</h3>
+            <p className="text-xs text-theme-text-muted">
+              Define a new destination schema field and map it to a source dataset column.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-theme-text-secondary block mb-1">
+                  Target Field Name
+                </label>
+                <input
+                  type="text"
+                  value={newTargetName}
+                  onChange={(e) => setNewTargetName(e.target.value)}
+                  placeholder="e.g., full_name, total_amount"
+                  className="saas-input w-full text-xs py-2 px-3"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-theme-text-secondary block mb-1">
+                  Source Column
+                </label>
+                <select
+                  value={newTargetSource}
+                  onChange={(e) => setNewTargetSource(e.target.value)}
+                  className="saas-input w-full text-xs py-2 px-3"
+                >
+                  <option value="">— Select Source Column —</option>
+                  {availableColumns.map((col) => (
+                    <option key={col} value={col}>
+                      {col}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-theme-border">
+              <button
+                type="button"
+                onClick={() => setShowAddCustomModal(false)}
+                className="btn-secondary text-xs py-2 px-4 rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAddCustomTarget}
+                className="btn-primary text-xs py-2 px-5 rounded-xl"
+              >
+                Add Field
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* JS Transform Code Modal */}
       {editingCodeField && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="saas-card max-w-xl w-full p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-theme-border pb-3">
               <div>
                 <h3 className="text-base font-bold text-theme-text-primary">
-                  V8 Transform: {editingCodeField}
+                  JavaScript Transform: {editingCodeField}
                 </h3>
-                <p className="text-xs text-theme-text-muted">
-                  JavaScript function executed per-row. Available arguments: <code className="text-theme-primary">value</code> and <code className="text-theme-primary">row</code>.
+                <p className="text-xs text-theme-text-muted mt-0.5">
+                  Executed per-row in an isolated sandbox. Available arguments: <code className="text-theme-primary">value</code> and <code className="text-theme-primary">row</code>.
                 </p>
               </div>
             </div>
@@ -544,10 +767,10 @@ const MappingPage = () => {
               value={codeBuffer}
               onChange={(e) => setCodeBuffer(e.target.value)}
               className="saas-input w-full font-mono text-xs p-3 leading-relaxed"
-              placeholder="// return value.trim().toLowerCase();"
+              placeholder="// return value ? String(value).trim().toUpperCase() : '';"
             />
 
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-theme-border">
               <button
                 type="button"
                 onClick={() => setEditingCodeField(null)}

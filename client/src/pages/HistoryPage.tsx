@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../services/api';
+import { useDataset } from '../contexts/DatasetContext';
 
 interface ImportJob {
   uploadId: string;
@@ -16,6 +17,7 @@ interface ImportJob {
 const HistoryPage = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { deleteDataset, refreshDatasets } = useDataset();
   const [jobs, setJobs] = useState<ImportJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -134,36 +136,13 @@ const HistoryPage = () => {
                       <button
                         type="button"
                         onClick={async () => {
-                          // confirm and delete
-                          // eslint-disable-next-line no-restricted-globals
-                          if (!confirm(`Delete dataset ${job.fileName}? This will remove all related data.`)) return;
+                          if (!window.confirm(`Delete dataset ${job.fileName}? This will remove all related data.`)) return;
                           try {
-                            await api.delete(`/imports/${job.uploadId}`);
-                            // refresh list
+                            await deleteDataset(job.uploadId);
                             const resp = await api.get('/imports');
                             setJobs(resp.data.jobs ?? []);
                           } catch (err: any) {
-                            // eslint-disable-next-line no-console
-                            console.error('Delete failed', err);
-                            const msg = err?.response?.data?.message || err?.message || 'Failed to delete dataset';
-                            const details = err?.response?.data?.details ? `: ${JSON.stringify(err.response.data.details)}` : '';
-                            // If import not found, allow admin force-delete retry
-                            if (msg === 'Import not found' && /* eslint-disable-next-line no-restricted-globals */ confirm('Import not found for your account. Try force-delete as admin?')) {
-                              try {
-                                await api.delete(`/imports/${job.uploadId}?force=true`);
-                                const resp = await api.get('/imports');
-                                setJobs(resp.data.jobs ?? []);
-                                return;
-                              } catch (err2: any) {
-                                // eslint-disable-next-line no-console
-                                console.error('Force delete failed', err2);
-                                const m2 = err2?.response?.data?.message || err2?.message || 'Force delete failed';
-                                alert(`${m2}${err2?.response?.data?.details ? `: ${JSON.stringify(err2.response.data.details)}` : ''}`);
-                                return;
-                              }
-                            }
-
-                            alert(`${msg}${details}`);
+                            alert(err?.message || 'Failed to delete dataset');
                           }
                         }}
                         className="btn-secondary text-[11px] py-1.5 px-3 rounded-lg flex items-center gap-1 whitespace-nowrap text-rose-600 dark:text-rose-400 hover:bg-rose-50 hover:border-rose-200 dark:hover:bg-rose-950/40"

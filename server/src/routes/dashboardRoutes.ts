@@ -1,20 +1,15 @@
 import { Router, Response } from 'express';
-import { requireAuth, AuthedRequest } from '../middleware/authMiddleware';
+import { requireAuth, AuthedRequest, createOwnerFilter } from '../middleware/authMiddleware';
 import ImportJob from '../models/ImportJob';
 import UploadRow from '../models/UploadRow';
 import { generateDatasetProfile } from './profilingRoutes';
 
 const router = Router();
 
-const createJobFilter = (email?: string, id?: string) => {
-  const owners = [email, id].filter(Boolean) as string[];
-  return owners.length ? { createdBy: { $in: owners } } : {};
-};
-
 router.get('/', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const owner = req.user?.email || req.user?.id;
-    const filter = createJobFilter(req.user?.email, req.user?.id);
+    const filter = createOwnerFilter(req.user?.email, req.user?.id);
     const jobs = await ImportJob.find(filter).sort({ updatedAt: -1, createdAt: -1 }).lean();
 
     if (!jobs.length) {
@@ -35,33 +30,27 @@ router.get('/', requireAuth, async (req: AuthedRequest, res: Response) => {
       });
     }
 
-    // Group jobs by fileName to find unique canonical datasets
-    const fileGroups: Record<string, typeof jobs> = {};
-    jobs.forEach((j) => {
-      const key = j.fileName;
-      if (!fileGroups[key]) fileGroups[key] = [];
-      fileGroups[key].push(j);
-    });
-
-    // For each unique dataset, find the latest job and count live rows in uploadrows
+    // Build dataset list with distinct identifiers and formatting
     const datasetItems = await Promise.all(
-      Object.entries(fileGroups).map(async ([, groupJobs]) => {
-        const sorted = [...groupJobs].sort(
-          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        );
-        const latest = sorted[sorted.length - 1];
-        const persistedRows = await UploadRow.countDocuments({ uploadId: latest.uploadId });
+      jobs.map(async (j) => {
+        const persistedRows = await UploadRow.countDocuments({ uploadId: j.uploadId });
+        const dateStr = new Date(j.createdAt).toLocaleDateString([], {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        const shortId = j.uploadId.slice(0, 8);
 
         return {
-          uploadId: latest.uploadId,
-          fileName: latest.fileName,
+          uploadId: j.uploadId,
+          fileName: j.fileName,
           persistedRows,
-          historicalRows: latest.totalRows || 0,
-          status: latest.status,
-          createdAt: latest.createdAt,
-          label: `${latest.fileName} (${persistedRows > 0 ? persistedRows.toLocaleString() + ' rows' : 'No rows in storage'})`,
-          isLatest: true,
-          columns: latest.columns || []
+          historicalRows: j.totalRows || 0,
+          status: j.status,
+          createdAt: j.createdAt,
+          label: `${j.fileName} (${persistedRows > 0 ? persistedRows.toLocaleString() + ' rows' : 'No rows in storage'} • ${dateStr} • ${shortId})`,
+          columns: j.columns || []
         };
       })
     );
@@ -70,9 +59,9 @@ router.get('/', requireAuth, async (req: AuthedRequest, res: Response) => {
     const totalHistoricalRows = datasetItems.reduce((acc, d) => acc + d.historicalRows, 0);
     const registeredDatasets = datasetItems.length;
 
-    // Resolve active dataset: requested by query or default to preferred / latest
-    const requestedId = typeof req.query.uploadId === 'string' ? req.query.uploadId : null;
-    let targetJob = jobs.find((j) => j.uploadId === requestedId);
+    // Resolve active dataset: requested by query or default to latest
+    const requestedId = typeof req.query.uploadId === 'string' ? req.query.uploadId.trim() : null;
+    let targetJob = requestedId ? jobs.find((j) => j.uploadId === requestedId) : null;
     if (!targetJob) {
       targetJob = jobs[0];
     }
@@ -124,4 +113,3 @@ router.get('/', requireAuth, async (req: AuthedRequest, res: Response) => {
 });
 
 export default router;
-

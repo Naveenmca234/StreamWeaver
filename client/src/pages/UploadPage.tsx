@@ -84,8 +84,11 @@ const UploadPage = () => {
     const file = acceptedFiles[0];
     setError('');
 
-    if (!['text/csv', 'application/json', 'application/octet-stream'].includes(file.type) && !/\.(csv|json)$/i.test(file.name)) {
-      setError('Only CSV and JSON files are supported.');
+    if (
+      !['text/csv', 'application/json', 'application/octet-stream', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'].includes(file.type) &&
+      !/\.(csv|json|xls|xlsx|xlsm)$/i.test(file.name)
+    ) {
+      setError('Only CSV, JSON, and Excel (.xls, .xlsx, .xlsm) files are supported.');
       return;
     }
 
@@ -160,6 +163,24 @@ const UploadPage = () => {
     }
   }, [registerNewUpload]);
 
+  const continueToCleaning = async () => {
+    const colsToSave = selectedColumns.length ? selectedColumns : availableColumns;
+    if (uploadId) {
+      setSavingColumns(true);
+      try {
+        if (colsToSave.length) {
+          await api.patch(`/imports/${uploadId}/columns`, { selectedColumns: colsToSave });
+        }
+        await selectDataset(uploadId);
+        navigate(`/cleaning?uploadId=${uploadId}`);
+      } catch {
+        navigate(`/cleaning?uploadId=${uploadId}`);
+      } finally {
+        setSavingColumns(false);
+      }
+    }
+  };
+
   const continueToMapping = async () => {
     const colsToSave = selectedColumns.length ? selectedColumns : availableColumns;
     if (!colsToSave.length) {
@@ -184,7 +205,14 @@ const UploadPage = () => {
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
     multiple: false,
-    accept: { 'text/csv': ['.csv'], 'application/json': ['.json'] }
+    disabled: loading,
+    accept: {
+      'text/csv': ['.csv'],
+      'application/json': ['.json'],
+      'application/vnd.ms-excel': ['.xls'],
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      'application/vnd.ms-excel.sheet.macroEnabled.12': ['.xlsm']
+    }
   });
 
   return (
@@ -231,7 +259,7 @@ const UploadPage = () => {
             {isDragActive ? 'Drop your dataset file here...' : 'Drag & drop your dataset file here'}
           </p>
           <p className="mt-2 text-xs sm:text-sm text-theme-text-muted max-w-md">
-            Supports CSV and JSON formats up to 5GB. Streamed directly to local database memory.
+            Supports CSV, JSON, and Excel (.xls, .xlsx, .xlsm) formats up to 5GB. Streamed directly to local database memory.
           </p>
           <button
             type="button"
@@ -369,7 +397,7 @@ const UploadPage = () => {
                 <div className="saas-card p-4 bg-theme-surface-blue border-theme-border-strong">
                   <p className="text-xs text-theme-primary font-bold">Quality Score</p>
                   <p className="text-xl font-bold text-theme-primary mt-1">
-                    {displayProfile?.qualityScore != null ? `${displayProfile.qualityScore}%` : '100%'}
+                    {displayProfile?.qualityScore != null ? `${displayProfile.qualityScore}%` : '—'}
                   </p>
                 </div>
               </div>
@@ -393,7 +421,7 @@ const UploadPage = () => {
                 <button
                   type="button"
                   onClick={continueToMapping}
-                  disabled={savingColumns || (!profile && (loading || profiling))}
+                  disabled={savingColumns || (!displayProfile && (loading || profiling))}
                   className="btn-primary text-xs py-2.5 px-5 rounded-xl flex items-center gap-2 ml-auto disabled:opacity-50"
                 >
                   <span>{savingColumns ? 'Saving schema...' : 'Continue to Mapping'}</span>

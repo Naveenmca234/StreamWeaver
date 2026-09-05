@@ -4,15 +4,19 @@ export interface ITransformedRow extends Document {
   uploadId: string;
   rowNumber: number;
   transformedData: Record<string, unknown>;
+  createdBy?: string;
 }
 
 const transformedRowSchema = new Schema<ITransformedRow>(
   {
     uploadId: { type: String, required: true, index: true },
     rowNumber: { type: Number, required: true },
-    transformedData: { type: Schema.Types.Mixed, required: true }
+    transformedData: { type: Schema.Types.Mixed, required: true },
+    createdBy: { type: String, required: false, index: true }
   },
   { timestamps: true }
 );
+
+transformedRowSchema.index({ uploadId: 1, rowNumber: 1 }, { unique: true });
 
 export default mongoose.model<ITransformedRow>('TransformedRow', transformedRowSchema);
